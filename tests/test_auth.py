@@ -112,15 +112,20 @@ def test_login_with_fixed_code_returns_bearer_token(client: TestClient):
 
 
 @pytest.mark.parametrize(
-    ("phone", "code"),
-    [
-        ("13800000000", "000000"),
-        ("13700000000", "123456"),
-        ("13900000000", "123456"),
-    ],
+    "phone",
+    ["13700000000", "13900000000"],
 )
-def test_login_rejects_invalid_code_unknown_or_deleted_user(client: TestClient, phone: str, code: str):
-    response = client.post("/api/auth/login", json={"phone": phone, "code": code})
+def test_login_registers_unknown_or_previously_deleted_phone(client: TestClient, phone: str):
+    response = client.post("/api/auth/login", json={"phone": phone, "code": "123456"})
+
+    assert response.status_code == 200
+    assert response.json()["is_new_user"] is True
+    assert response.json()["onboarding_completed"] is False
+    assert response.json()["user"]["id"] != 2
+
+
+def test_login_rejects_invalid_code(client: TestClient):
+    response = client.post("/api/auth/login", json={"phone": "13800000000", "code": "000000"})
 
     assert response.status_code == 401
 

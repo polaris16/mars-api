@@ -17,9 +17,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.db.database import engine
+from app.core.config import get_settings
 import uvicorn
 
 @asynccontextmanager
@@ -32,6 +34,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     application = FastAPI(title="Mars API", version="0.1.0", lifespan=lifespan)
+    settings = get_settings()
+    # [新增] Mock 直传供本地 Web 前端使用；生产 S3 模式不自动开放开发源站。
+    if settings.object_storage_mode == "mock":
+        origins = [origin.strip() for origin in settings.object_storage_mock_cors_origins.split(",") if origin.strip()]
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=False,
+            allow_methods=["GET", "PUT", "OPTIONS"],
+            allow_headers=["Content-Type", "If-None-Match", "Range"],
+            expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+        )
     application.include_router(api_router, prefix="/api")
     return application
 

@@ -78,6 +78,9 @@ class InterestService:
                     updated_by=current_user.id,
                 ))
 
+            # SessionLocal 关闭了 autoflush；先写出软删除/新增状态，再读取最终选择列表。
+            session.flush()
+
             # 只有必填的基础资料已填写且用户提交了兴趣选择，才完成首次引导。
             if current_user.display_name and current_user.sex is not None and current_user.birth_date is not None:
                 current_user.onboarding_completed = True

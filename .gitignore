@@ -2,10 +2,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-run-*/
 .ruff_cache/
 .env
 .env.*
 !.env.example
+.local-media/
 .DS_Store
 *.egg-info/
 build/

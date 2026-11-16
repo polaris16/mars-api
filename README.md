@@ -151,7 +151,14 @@ uv run alembic upgrade head --sql
 uv run pytest
 ```
 
-测试使用临时 SQLite 数据库验证会话提交与回滚，以及 Alembic 自动生成、升级、回退和离线 SQL 流程，不访问 PostgreSQL。实际 PostgreSQL 的连接、权限和认证需在目标环境验证。
+默认测试使用临时 SQLite，不访问 PostgreSQL。录音接口另有真实 PostgreSQL 集成测试，执行前会写入测试数据并保留数据和本地媒体文件。需要连接 `.env` 数据库时，明确设置开关运行：
+
+```powershell
+$env:RUN_RECORDING_MEDIA_INTEGRATION = "1"
+uv run pytest -s tests/test_recording_media.py
+```
+
+该集成测试强制使用本地 Mock 存储，不调用真实 OSS。测试记录和 `.local-media/` 文件不会自动清理。
 
 ## 添加业务模块
 

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,30 @@ class Settings(BaseSettings):
     db_pool_recycle: int = Field(default=1800, gt=0)
     db_connect_timeout: int = Field(default=10, gt=0)
     db_echo: bool = False
+
+    # [新增] 开发默认使用本地 Mock 存储；部署时明确切换为 s3。
+    object_storage_mode: Literal["mock", "s3"] = "mock"
+    object_storage_mock_directory: str = ".local-media"
+    object_storage_mock_secret: SecretStr = SecretStr("mars-local-mock-storage-only")
+    object_storage_mock_public_base_url: str | None = None
+    object_storage_mock_cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost,capacitor://localhost,ionic://localhost"
+    )
+
+    # [新增] S3 兼容 OSS 配置；凭据仅由环境变量/.env 注入。
+    object_storage_provider: str = "s3"
+    object_storage_endpoint_url: str | None = None
+    object_storage_region: str = "us-east-1"
+    object_storage_bucket: str = ""
+    object_storage_access_key_id: str = ""
+    object_storage_secret_access_key: SecretStr = SecretStr("")
+    object_storage_upload_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    object_storage_read_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    object_storage_max_audio_bytes: int = Field(default=104857600, gt=0)
+    object_storage_max_image_bytes: int = Field(default=20971520, gt=0)
+    object_storage_max_video_bytes: int = Field(default=524288000, gt=0)
 
     @property
     def database_url(self) -> URL:
