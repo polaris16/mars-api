@@ -2,12 +2,15 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 
 class LoginUserResponse(BaseModel):
     """登录成功后返回给客户端的最小用户展示信息。"""
+
+    # 允许从 SQLAlchemy ORM 用户对象读取响应字段。
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     display_name: str | None
