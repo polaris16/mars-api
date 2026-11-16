@@ -8,13 +8,13 @@ from app.models.base import Base
 class InterestDomain(Base):
     __tablename__ = "t_interest_domain"
     __table_args__ = (
-        PrimaryKeyConstraint("id", name="pk_t_interest_domain"),
-        UniqueConstraint("code", name="uk_t_interest_domain_code"),
-        UniqueConstraint("name", name="uk_t_interest_domain_name"),
+        PrimaryKeyConstraint("id", name="t_interest_domain_pkey"),
+        UniqueConstraint("code", name="t_interest_domain_code_key"),
+        UniqueConstraint("name", name="t_interest_domain_name_key"),
         {"comment": "兴趣领域字典表"},
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="兴趣领域ID")
     code = Column(String(50), nullable=False, comment="兴趣领域编码")
     name = Column(String(50), nullable=False, comment="兴趣领域名称")
     is_enabled = Column(Boolean, nullable=False, server_default=text("true"), comment="是否启用")

@@ -40,6 +40,8 @@ def get_current_user(
     user = session.scalar(select(TUser).where(TUser.id == auth_session.user_id, TUser.is_del.is_(False)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
+    # 回滚结束鉴权阶段的只读事务，让后续 Service 可以显式开启自己的写事务。
+    session.rollback()
     return user
 
 

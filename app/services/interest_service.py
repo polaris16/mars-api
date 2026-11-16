@@ -39,41 +39,63 @@ class InterestService:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="兴趣领域 ID 不能重复")
 
         requested_ids = set(interest_ids)
-        valid_ids = set(session.scalars(
-            select(InterestDomain.id).where(
-                InterestDomain.id.in_(requested_ids) if requested_ids else False,
-                InterestDomain.is_enabled.is_(True),
-                InterestDomain.is_del.is_(False),
+        with session.begin():
+            current_user = session.scalar(
+                select(TUser).where(TUser.id == user.id, TUser.is_del.is_(False))
             )
-        ).all())
-        if valid_ids != requested_ids:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="包含无效、停用或已删除的兴趣领域")
+            if current_user is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
 
-        records = list(session.scalars(select(UserInterest).where(UserInterest.user_id == user.id)).all())
-        by_interest_id = {record.interest_id: record for record in records}
-        now = datetime.now(timezone.utc)
+            valid_ids = set(session.scalars(
+                select(InterestDomain.id).where(
+                    InterestDomain.id.in_(requested_ids),
+                    InterestDomain.is_enabled.is_(True),
+                    InterestDomain.is_del.is_(False),
+                )
+            ).all())
+            if valid_ids != requested_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="包含无效、停用或已删除的兴趣领域",
+                )
 
-        for interest_id, record in by_interest_id.items():
-            record.is_del = interest_id not in requested_ids
-            record.updated_by = user.id
-            record.updated_at = now
+            records = list(session.scalars(
+                select(UserInterest).where(UserInterest.user_id == current_user.id)
+            ).all())
+            by_interest_id = {record.interest_id: record for record in records}
+            now = datetime.now(timezone.utc)
 
-        for interest_id in requested_ids - by_interest_id.keys():
-            session.add(UserInterest(
-                user_id=user.id,
-                interest_id=interest_id,
-                created_by=user.id,
-                updated_by=user.id,
-            ))
+            for interest_id, record in by_interest_id.items():
+                record.is_del = interest_id not in requested_ids
+                record.updated_by = current_user.id
+                record.updated_at = now
 
-        # 只有必填的基础资料已填写且用户提交了兴趣选择，才完成首次引导。
-        if user.display_name and user.sex is not None and user.birth_date is not None:
-            user.onboarding_completed = True
-            user.updated_by = user.id
-            user.updated_at = now
+            for interest_id in requested_ids - by_interest_id.keys():
+                session.add(UserInterest(
+                    user_id=current_user.id,
+                    interest_id=interest_id,
+                    created_by=current_user.id,
+                    updated_by=current_user.id,
+                ))
 
-        session.commit()
-        return self.get_user_interests(session, user)
+            # 只有必填的基础资料已填写且用户提交了兴趣选择，才完成首次引导。
+            if current_user.display_name and current_user.sex is not None and current_user.birth_date is not None:
+                current_user.onboarding_completed = True
+                current_user.updated_by = current_user.id
+                current_user.updated_at = now
+
+            selected_interests = list(session.scalars(
+                select(InterestDomain)
+                .join(UserInterest, UserInterest.interest_id == InterestDomain.id)
+                .where(
+                    UserInterest.user_id == current_user.id,
+                    UserInterest.is_del.is_(False),
+                    InterestDomain.is_enabled.is_(True),
+                    InterestDomain.is_del.is_(False),
+                )
+                .order_by(InterestDomain.sort_order, InterestDomain.id)
+            ).all())
+        return selected_interests
 
     @staticmethod
     def to_response(interest: InterestDomain) -> InterestResponse:

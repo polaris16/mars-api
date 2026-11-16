@@ -30,10 +30,14 @@ class UserService:
         if not updates:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="至少提供一个待更新字段")
 
-        for field, value in updates.items():
-            setattr(user, field, value)
-        user.updated_by = user.id
-        user.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(user)
-        return user
+        with session.begin():
+            current_user = session.scalar(
+                select(TUser).where(TUser.id == user.id, TUser.is_del.is_(False))
+            )
+            if current_user is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
+            for field, value in updates.items():
+                setattr(current_user, field, value)
+            current_user.updated_by = current_user.id
+            current_user.updated_at = datetime.now(timezone.utc)
+        return current_user
