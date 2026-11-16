@@ -6,6 +6,7 @@ from app.models.interest_domain import InterestDomain
 from app.models.t_user import TUser
 from app.models.topic import Topic
 from app.models.topic_interest import TopicInterest
+from app.models.topic_participant import TopicParticipant
 from app.models.user_interest import UserInterest
 
-__all__ = ["Base", "TUser", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest"]
+__all__ = ["Base", "TUser", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]

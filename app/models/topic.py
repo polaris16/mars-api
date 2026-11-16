@@ -23,6 +23,8 @@ class Topic(Base):
     life_stage = Column(String(50), nullable=True, comment="适用人生阶段")
     is_enabled = Column(Boolean, nullable=False, server_default=text("true"), comment="是否启用")
     sort_order = Column(Integer, nullable=False, server_default=text("0"), comment="展示顺序")
+    is_general = Column(Boolean, nullable=False, server_default=text("false"), comment="是否通用话题")
+    participant_count = Column(BigInteger, nullable=False, server_default=text("0"), comment="聊过该话题的去重用户数")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间")
     updated_by = Column(BigInteger, nullable=True, comment="更新人ID")
