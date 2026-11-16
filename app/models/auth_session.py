@@ -1,6 +1,6 @@
 """认证会话模型。"""
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, String, text
 
 from app.models.base import Base
 
@@ -8,8 +8,8 @@ from app.models.base import Base
 class AuthSession(Base):
     """持久化登录会话；token_hash 是唯一索引，原始 Token 不入库。"""
 
-    __tablename__ = "auth_session"
-    __table_args__ = (Index("ix_auth_session_user_id", "user_id"),)
+    __tablename__ = "t_auth_session"
+    __table_args__ = (Index("ix_t_auth_session_user_id", "user_id"),)
 
     id = Column(BigInteger, primary_key=True)
     # 用户删除时级联清理其登录会话。
@@ -18,4 +18,8 @@ class AuthSession(Base):
     token_hash = Column(String(64), nullable=False, unique=True)
     # 登录签发时计算的 UTC 到期时间。
     expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_by = Column(BigInteger, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_by = Column(BigInteger, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    is_del = Column(Boolean, nullable=False, server_default=text("false"))
