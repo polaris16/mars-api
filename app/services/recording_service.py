@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import FragmentAttachment, MediaAsset, MemoryFragment, RecordingSession, TUser, Topic
+from app.models import FragmentAttachment, MediaAsset, MemoryFragment, RecordingSession, User, Topic
 from app.schemas.recording import (
     AttachmentBatchCreate,
     AttachmentPatch,
@@ -129,7 +129,7 @@ class RecordingService:
         )) or 0
         asset.upload_status = "attached" if fragment_ref + attachment_ref else "uploaded"
 
-    def create_session(self, session: Session, user: TUser, body: SessionCreate) -> RecordingSession:
+    def create_session(self, session: Session, user: User, body: SessionCreate) -> RecordingSession:
         if body.topic_id is not None and session.scalar(select(Topic.id).where(
             Topic.id == body.topic_id, Topic.is_enabled.is_(True), Topic.is_del.is_(False)
         )) is None:
@@ -141,7 +141,7 @@ class RecordingService:
             session.flush()
         return row
 
-    def list_sessions(self, session: Session, user: TUser, page: int, page_size: int, sort: str, order: str, is_favorite: bool | None) -> dict:
+    def list_sessions(self, session: Session, user: User, page: int, page_size: int, sort: str, order: str, is_favorite: bool | None) -> dict:
         filters = [RecordingSession.user_id == user.id, RecordingSession.is_del.is_(False)]
         if is_favorite is not None:
             filters.append(RecordingSession.is_favorite.is_(is_favorite))
@@ -159,7 +159,7 @@ class RecordingService:
             items.append({"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_recorded_at, "created_at": row.created_at, "fragment_count": fragment_count, "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None})
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
-    def patch_session(self, session: Session, user: TUser, session_id: int, body: SessionPatch) -> RecordingSession:
+    def patch_session(self, session: Session, user: User, session_id: int, body: SessionPatch) -> RecordingSession:
         values = body.model_dump(exclude_unset=True)
         if not values:
             raise HTTPException(status_code=422, detail="至少提供一个要更新的字段")
@@ -173,7 +173,7 @@ class RecordingService:
             row.updated_by = user.id
         return row
 
-    def delete_session(self, session: Session, user: TUser, session_id: int) -> None:
+    def delete_session(self, session: Session, user: User, session_id: int) -> None:
         with session.begin():
             row = self._session(session, user.id, session_id, lock=True)
             now = datetime.now(timezone.utc)
@@ -199,7 +199,7 @@ class RecordingService:
                 if asset:
                     self._refresh_asset_status(session, asset)
 
-    def create_upload_authorization(self, session: Session, user: TUser, body: UploadAuthorizationRequest, storage: ObjectStorageService) -> dict:
+    def create_upload_authorization(self, session: Session, user: User, body: UploadAuthorizationRequest, storage: ObjectStorageService) -> dict:
         settings = get_settings()
         # 先缓存标量主键；后续预检回滚会使 ORM 对象过期，不能再通过 user.id 触发隐式查询。
         user_id = user.id
@@ -231,7 +231,7 @@ class RecordingService:
         url = storage.create_upload_url(key, body.content_type, settings.object_storage_upload_ttl_seconds, body.size_bytes)
         return {"reused": False, "asset_id": asset.id, "upload_method": "PUT", "upload_url": url, "required_headers": {"Content-Type": body.content_type, "If-None-Match": "*"}, "expires_at": expires_at}
 
-    def complete_upload(self, session: Session, user: TUser, asset_id: int, body: UploadCompleteRequest, storage: ObjectStorageService) -> MediaAsset:
+    def complete_upload(self, session: Session, user: User, asset_id: int, body: UploadCompleteRequest, storage: ObjectStorageService) -> MediaAsset:
         asset = self._asset(session, user.id, asset_id)
         if asset.upload_status in {"uploaded", "attached"}:
             return asset
@@ -279,7 +279,7 @@ class RecordingService:
             return existing
         return asset
 
-    def create_fragment(self, session: Session, user: TUser, session_id: int, body: FragmentCreate) -> MemoryFragment:
+    def create_fragment(self, session: Session, user: User, session_id: int, body: FragmentCreate) -> MemoryFragment:
         self._session(session, user.id, session_id)
         asset = self._asset(session, user.id, body.audio_asset_id)
         if asset.purpose != "recording" or asset.media_type != "audio" or asset.upload_status not in {"uploaded", "attached"}:
@@ -301,7 +301,7 @@ class RecordingService:
             session.flush()
         return fragment
 
-    def list_fragments(self, session: Session, user: TUser, session_id: int, page: int, page_size: int, storage: ObjectStorageService | None = None) -> dict:
+    def list_fragments(self, session: Session, user: User, session_id: int, page: int, page_size: int, storage: ObjectStorageService | None = None) -> dict:
         self._session(session, user.id, session_id)
         total = session.scalar(select(func.count(MemoryFragment.id)).where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False))) or 0
         rows = session.scalars(select(MemoryFragment).where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no).offset((page - 1) * page_size).limit(page_size)).all()
@@ -312,14 +312,14 @@ class RecordingService:
         attachments = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False)).order_by(FragmentAttachment.sort_order, FragmentAttachment.id)).all()
         return {"id": fragment.id, "session_id": fragment.session_id, "sequence_no": fragment.sequence_no, "transcript_raw": fragment.transcript_raw, "transcript_edited": fragment.transcript_edited, "recorded_at": fragment.recorded_at, "audio": self._asset_response(audio, storage), "attachments": [self._attachment_response(session, item, storage) for item in attachments]}
 
-    def get_fragment(self, session: Session, user: TUser, session_id: int, fragment_id: int, storage: ObjectStorageService) -> dict:
+    def get_fragment(self, session: Session, user: User, session_id: int, fragment_id: int, storage: ObjectStorageService) -> dict:
         self._session(session, user.id, session_id)
         fragment = self._fragment(session, user.id, fragment_id)
         if fragment.session_id != session_id:
             raise self._not_found()
         return self._fragment_response(session, fragment, storage)
 
-    def patch_fragment(self, session: Session, user: TUser, session_id: int, fragment_id: int, body: FragmentPatch) -> MemoryFragment:
+    def patch_fragment(self, session: Session, user: User, session_id: int, fragment_id: int, body: FragmentPatch) -> MemoryFragment:
         with session.begin():
             self._session(session, user.id, session_id)
             fragment = self._fragment(session, user.id, fragment_id, lock=True)
@@ -329,7 +329,7 @@ class RecordingService:
             fragment.updated_by = user.id
         return fragment
 
-    def delete_fragment(self, session: Session, user: TUser, session_id: int, fragment_id: int) -> None:
+    def delete_fragment(self, session: Session, user: User, session_id: int, fragment_id: int) -> None:
         with session.begin():
             self._session(session, user.id, session_id, lock=True)
             fragment = self._fragment(session, user.id, fragment_id, lock=True)
@@ -350,7 +350,7 @@ class RecordingService:
                 if asset:
                     self._refresh_asset_status(session, asset)
 
-    def create_attachments(self, session: Session, user: TUser, fragment_id: int, body: AttachmentBatchCreate, storage: ObjectStorageService | None = None) -> list[dict]:
+    def create_attachments(self, session: Session, user: User, fragment_id: int, body: AttachmentBatchCreate, storage: ObjectStorageService | None = None) -> list[dict]:
         with session.begin():
             fragment = self._fragment(session, user.id, fragment_id, lock=True)
             current = session.scalar(select(func.count(FragmentAttachment.id)).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False))) or 0
@@ -387,12 +387,12 @@ class RecordingService:
         asset = session.get(MediaAsset, link.media_asset_id)
         return {"id": link.id, "fragment_id": link.fragment_id, "asset": self._asset_response(asset, storage), "caption": link.caption, "sort_order": link.sort_order, "created_at": link.created_at}
 
-    def list_attachments(self, session: Session, user: TUser, fragment_id: int, storage: ObjectStorageService) -> list[dict]:
+    def list_attachments(self, session: Session, user: User, fragment_id: int, storage: ObjectStorageService) -> list[dict]:
         self._fragment(session, user.id, fragment_id)
         rows = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)).order_by(FragmentAttachment.sort_order, FragmentAttachment.id)).all()
         return [self._attachment_response(session, row, storage) for row in rows]
 
-    def patch_attachment(self, session: Session, user: TUser, fragment_id: int, attachment_id: int, body: AttachmentPatch, storage: ObjectStorageService | None = None) -> dict:
+    def patch_attachment(self, session: Session, user: User, fragment_id: int, attachment_id: int, body: AttachmentPatch, storage: ObjectStorageService | None = None) -> dict:
         values = body.model_dump(exclude_unset=True)
         if not values:
             raise HTTPException(status_code=422, detail="至少提供一个要更新的字段")
@@ -406,7 +406,7 @@ class RecordingService:
             link.updated_by = user.id
         return self._attachment_response(session, link, storage)
 
-    def delete_attachment(self, session: Session, user: TUser, fragment_id: int, attachment_id: int) -> None:
+    def delete_attachment(self, session: Session, user: User, fragment_id: int, attachment_id: int) -> None:
         with session.begin():
             self._fragment(session, user.id, fragment_id, lock=True)
             link = session.scalar(select(FragmentAttachment).where(FragmentAttachment.id == attachment_id, FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)))
@@ -419,7 +419,7 @@ class RecordingService:
             asset = self._asset(session, user.id, link.media_asset_id, lock=True)
             self._refresh_asset_status(session, asset)
 
-    def list_assets(self, session: Session, user: TUser, page: int, page_size: int, purpose: str | None, media_type: str | None, storage: ObjectStorageService) -> dict:
+    def list_assets(self, session: Session, user: User, page: int, page_size: int, purpose: str | None, media_type: str | None, storage: ObjectStorageService) -> dict:
         filters = [MediaAsset.user_id == user.id, MediaAsset.is_del.is_(False), MediaAsset.upload_status.in_(["uploaded", "attached"])]
         if purpose:
             filters.append(MediaAsset.purpose == purpose)
@@ -429,10 +429,10 @@ class RecordingService:
         rows = session.scalars(select(MediaAsset).where(*filters).order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
         return {"items": [self._asset_response(row, storage) for row in rows], "page": page, "page_size": page_size, "total": total}
 
-    def get_asset(self, session: Session, user: TUser, asset_id: int, storage: ObjectStorageService) -> MediaAssetResponse:
+    def get_asset(self, session: Session, user: User, asset_id: int, storage: ObjectStorageService) -> MediaAssetResponse:
         return self._asset_response(self._asset(session, user.id, asset_id), storage)
 
-    def delete_asset(self, session: Session, user: TUser, asset_id: int) -> None:
+    def delete_asset(self, session: Session, user: User, asset_id: int) -> None:
         with session.begin():
             asset = self._asset(session, user.id, asset_id, lock=True)
             clip_refs = session.scalar(select(func.count(MemoryFragment.id)).where(MemoryFragment.audio_asset_id == asset.id, MemoryFragment.is_del.is_(False))) or 0
@@ -443,7 +443,7 @@ class RecordingService:
             asset.purge_after = datetime.now(timezone.utc) + timedelta(days=30)
             asset.updated_by = user.id
 
-    def get_session_detail(self, session: Session, user: TUser, session_id: int, storage: ObjectStorageService) -> dict:
+    def get_session_detail(self, session: Session, user: User, session_id: int, storage: ObjectStorageService) -> dict:
         row = self._session(session, user.id, session_id)
         fragments = session.scalars(select(MemoryFragment).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no)).all()
         attachment_count = session.scalar(select(func.count(FragmentAttachment.id)).join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False), FragmentAttachment.is_del.is_(False))) or 0

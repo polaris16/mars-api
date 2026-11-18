@@ -1,4 +1,4 @@
-"""[新增] 录音会话、片段、OSS 媒体和附件接口模型。"""
+"""录音会话、片段、OSS 媒体和附件接口模型。"""
 
 from datetime import datetime
 from typing import Annotated, Literal

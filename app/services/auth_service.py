@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AuthSession, TUser
+from app.models import AuthSession, User
 
 
 class AuthService:
@@ -29,7 +29,7 @@ class AuthService:
         """对新老手机号统一返回模拟发送成功，不泄露账号是否已注册。"""
         return self.code_ttl_seconds
 
-    def login(self, session: Session, phone: str, code: str) -> tuple[TUser, str, datetime, bool]:
+    def login(self, session: Session, phone: str, code: str) -> tuple[User, str, datetime, bool]:
         # 当前开发方案通过固定验证码和手机号匹配用户。
         # 先校验验证码，再只查询未软删除用户，避免已删除账号获得登录态。
         if code != self.development_code:
@@ -39,11 +39,11 @@ class AuthService:
             # 用户首次注册与会话签发处在同一事务中，失败时一起回滚。
             with session.begin():
                 user = session.scalar(
-                    select(TUser).where(TUser.phone == phone, TUser.is_del.is_(False))
+                    select(User).where(User.phone == phone, User.is_del.is_(False))
                 )
                 if user is None:
                     # 新手机号首次登录即注册；手机号同时作为临时用户名。
-                    user = TUser(username=phone, phone=phone, sex=0, user_role=0, is_del=False)
+                    user = User(username=phone, phone=phone, sex=0, user_role=0, is_del=False)
                     session.add(user)
                     session.flush()
                     is_new_user = True
@@ -61,7 +61,7 @@ class AuthService:
             # 并发首次登录时唯一手机号索引保证只创建一个用户；竞争失败方复用已创建账号。
             with session.begin():
                 user = session.scalar(
-                    select(TUser).where(TUser.phone == phone, TUser.is_del.is_(False))
+                    select(User).where(User.phone == phone, User.is_del.is_(False))
                 )
                 if user is None:
                     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="无法创建用户")

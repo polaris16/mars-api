@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import InterestDomain, TUser, UserInterest
+from app.models import InterestDomain, User, UserInterest
 from app.schemas.interest import InterestResponse
 
 
@@ -19,7 +19,7 @@ class InterestService:
             .order_by(InterestDomain.sort_order, InterestDomain.id)
         ).all())
 
-    def get_user_interests(self, session: Session, user: TUser) -> list[InterestDomain]:
+    def get_user_interests(self, session: Session, user: User) -> list[InterestDomain]:
         """读取用户当前有效选择，并忽略已停用或已删除的领域。"""
         return list(session.scalars(
             select(InterestDomain)
@@ -33,7 +33,7 @@ class InterestService:
             .order_by(InterestDomain.sort_order, InterestDomain.id)
         ).all())
 
-    def save_user_interests(self, session: Session, user: TUser, interest_ids: list[int]) -> list[InterestDomain]:
+    def save_user_interests(self, session: Session, user: User, interest_ids: list[int]) -> list[InterestDomain]:
         """以请求列表替换用户选择；关联通过软删除和恢复实现可重复选择。"""
         if len(interest_ids) != len(set(interest_ids)):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="兴趣领域 ID 不能重复")
@@ -41,7 +41,7 @@ class InterestService:
         requested_ids = set(interest_ids)
         with session.begin():
             current_user = session.scalar(
-                select(TUser).where(TUser.id == user.id, TUser.is_del.is_(False))
+                select(User).where(User.id == user.id, User.is_del.is_(False))
             )
             if current_user is None:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")

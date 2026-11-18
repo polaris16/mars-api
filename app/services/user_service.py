@@ -6,25 +6,25 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import TUser
+from app.models import User
 from app.schemas.user_profile import UserProfileUpdateRequest
 
 
 class UserService:
-    def list_all(self, session: Session) -> list[TUser]:
+    def list_all(self, session: Session) -> list[User]:
         """按主键排序，返回表中全部记录（包括软删除记录）。"""
-        return list(session.scalars(select(TUser).order_by(TUser.id)).all())
+        return list(session.scalars(select(User).order_by(User.id)).all())
 
-    def get_profile(self, user: TUser) -> TUser:
+    def get_profile(self, user: User) -> User:
         """返回已由鉴权依赖确认身份的当前用户。"""
         return user
 
     def update_profile(
         self,
         session: Session,
-        user: TUser,
+        user: User,
         payload: UserProfileUpdateRequest,
-    ) -> TUser:
+    ) -> User:
         """只更新 PATCH 请求实际提交的资料字段。"""
         updates = payload.model_dump(exclude_unset=True)
         if not updates:
@@ -32,7 +32,7 @@ class UserService:
 
         with session.begin():
             current_user = session.scalar(
-                select(TUser).where(TUser.id == user.id, TUser.is_del.is_(False))
+                select(User).where(User.id == user.id, User.is_del.is_(False))
             )
             if current_user is None:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")

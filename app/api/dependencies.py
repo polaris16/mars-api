@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models import AuthSession, TUser
+from app.models import AuthSession, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -18,7 +18,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: Annotated[Session, Depends(get_db)],
-) -> TUser:
+) -> User:
     """验证 Token 会话并返回对应的有效用户。"""
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
@@ -37,7 +37,7 @@ def get_current_user(
     if expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录凭证无效或已过期")
 
-    user = session.scalar(select(TUser).where(TUser.id == auth_session.user_id, TUser.is_del.is_(False)))
+    user = session.scalar(select(User).where(User.id == auth_session.user_id, User.is_del.is_(False)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
     # 回滚结束鉴权阶段的只读事务，让后续 Service 可以显式开启自己的写事务。
@@ -45,4 +45,4 @@ def get_current_user(
     return user
 
 
-CurrentUser = Annotated[TUser, Depends(get_current_user)]
+CurrentUser = Annotated[User, Depends(get_current_user)]

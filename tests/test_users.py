@@ -7,12 +7,12 @@ from fastapi.testclient import TestClient
 
 from app.db.database import get_db
 from app.main import app
-from app.models import TUser
+from app.models import User
 
 
 def test_list_users_returns_all_rows_including_soft_deleted():
     now = datetime.now(timezone.utc)
-    user = TUser(
+    user = User(
         id=1,
         username="alice",
         display_name="Alice",

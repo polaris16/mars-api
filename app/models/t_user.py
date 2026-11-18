@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, BIGINT, BOOLEAN, DATE, SMALLIN
 from app.models.base import Base
 
 
-class TUser(Base):
+class User(Base):
     __tablename__ = 't_user'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='t_user_pkey'),

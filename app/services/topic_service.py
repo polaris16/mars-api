@@ -3,7 +3,7 @@
 from sqlalchemy import case, exists, func, literal, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import InterestDomain, Topic, TopicInterest, TUser, UserInterest
+from app.models import InterestDomain, Topic, TopicInterest, User, UserInterest
 from app.schemas.topic import TopicCardResponse, TopicRecommendationResponse
 
 
@@ -31,7 +31,7 @@ class TopicService:
     def get_recommended_topics(
         self,
         session: Session,
-        user: TUser,
+        user: User,
         page: int,
         page_size: int,
     ) -> TopicRecommendationResponse:
