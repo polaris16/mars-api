@@ -12,6 +12,12 @@ class MemoryElement(Base):
         PrimaryKeyConstraint("id", name="t_memory_element_pkey"),
         Index("uq_t_memory_element_fragment_sequence_active", "source_fragment_id", "sequence_no", unique=True, postgresql_where=text("is_del = false")),
         CheckConstraint("element_type IN ('event', 'fact', 'life_stage', 'other')", name="ck_t_memory_element_type"),
+        CheckConstraint("origin IN ('extracted', 'fallback')", name="ck_t_memory_element_origin"),
+        Index(
+            "uq_t_memory_element_active_fallback", "source_fragment_id", unique=True,
+            postgresql_where=text("origin = 'fallback' AND is_del = false"),
+            sqlite_where=text("origin = 'fallback' AND is_del = false"),
+        ),
         CheckConstraint("review_status IN ('pending', 'confirmed', 'corrected', 'cannot_remember', 'rejected')", name="ck_t_memory_element_review_status"),
         CheckConstraint("time_start IS NULL OR time_end IS NULL OR time_start <= time_end", name="ck_t_memory_element_time_range"),
         CheckConstraint("overall_confidence IS NULL OR overall_confidence BETWEEN 0 AND 1", name="ck_t_memory_element_confidence"),
@@ -27,6 +33,7 @@ class MemoryElement(Base):
     processing_job_id = Column(BigInteger, ForeignKey("t_ai_processing_job.id", ondelete="SET NULL", name="fk_t_memory_element_job"), nullable=True, comment="Processing job id")
     sequence_no = Column(Integer, nullable=False, comment="Sequence no")
     element_type = Column(String(30), nullable=False, server_default=text("'event'"), comment="Element type")
+    origin = Column(String(20), nullable=False, server_default=text("'extracted'"), comment="生成来源：extracted 正常抽取，fallback 原文兜底")
     summary = Column(Text, nullable=False, comment="Summary")
     source_quote = Column(Text, nullable=True, comment="Source quote")
     exact_at = Column(DateTime(timezone=True), nullable=True, comment="Exact at")

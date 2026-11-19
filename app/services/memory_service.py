@@ -1,6 +1,7 @@
 """记忆会话、素材片段及 OSS 素材管理业务逻辑。"""
 
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 import hmac
 import uuid
 
@@ -432,7 +433,10 @@ class MemoryService:
             return existing
         return asset
 
-    def create_fragment(self, session: Session, user: User, session_id: int, body: FragmentCreate) -> MemoryFragment:
+    def create_fragment(
+        self, session: Session, user: User, session_id: int, body: FragmentCreate,
+        *, after_flush: Callable[[MemoryFragment], None] | None = None,
+    ) -> MemoryFragment:
         # [删除-旧] 原实现只接受 audio_asset_id，片段固定引用音频并禁止素材复用；保留旧实现便于追溯。
         # self._session(session, user.id, session_id)
         # asset = self._asset(session, user.id, body.audio_asset_id)
@@ -493,6 +497,8 @@ class MemoryService:
             session.flush()
             if row.topic_id is not None:
                 TopicService.record_participation(session, row.topic_id, user.id)
+            if after_flush is not None:
+                after_flush(fragment)
         return fragment
 
     def list_fragments(self, session: Session, user: User, session_id: int, page: int, page_size: int, storage: ObjectStorageService | None = None) -> dict:

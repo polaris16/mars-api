@@ -58,13 +58,20 @@ class MemoryContributorService:
             and row.relationship_id == member.source_relationship_id
         )
 
+    def is_consented_contributor(
+        self, db: Session, memory: MemorySession, row: MemoryContributor, user: User,
+    ) -> bool:
+        return (
+            row.session_id == memory.id and row.account_user_id == user.id
+            and not row.is_del and row.consent_status == "accepted"
+            and self._is_eligible(db, memory, row, user, datetime.now(timezone.utc))
+        )
+
     def require_consented_contributor(
         self, db: Session, memory: MemorySession, user: User,
     ) -> MemoryContributor:
         row = self._find(db, memory.id, user.id)
-        if row is None or row.consent_status != "accepted" or not self._is_eligible(
-            db, memory, row, user, datetime.now(timezone.utc),
-        ):
+        if row is None or not self.is_consented_contributor(db, memory, row, user):
             raise HTTPException(status_code=403, detail="需要有效的素材提供者资格和本人同意")
         return row
 

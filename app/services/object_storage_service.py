@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+from http.client import IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -234,6 +235,23 @@ class ObjectStorageService:
         except (URLError, TimeoutError, OSError) as exc:
             raise HTTPException(status_code=502, detail="无法连接对象存储校验文件") from exc
         return size, content_type, digest.hexdigest(), bytes(prefix)
+
+    # [新增] 文本抽取仅读取已确认对象的有限字节数。
+    def read_text_source(self, key: str, max_bytes: int, timeout: float) -> bytes:
+        """Read a bounded extractable text object without exposing a signed URL to clients."""
+        try:
+            if self.mode == "mock":
+                with self._local_path(key).open("rb") as stream:
+                    return stream.read(max_bytes + 1)
+            with urlopen(Request(self._presign("GET", key, 120), method="GET"), timeout=timeout) as stream:
+                return stream.read(max_bytes + 1)
+        except HTTPError as exc:
+            exc.close()
+            raise HTTPException(status_code=409 if exc.code == 404 else 502, detail="无法读取来源文件") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=409, detail="来源文件不存在") from None
+        except (URLError, OSError, IncompleteRead):
+            raise HTTPException(status_code=502, detail="无法读取来源文件") from None
 
     def create_read_url(self, key: str, expires_in: int) -> str:
         if self.mode == "mock":

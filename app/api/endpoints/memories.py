@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -10,11 +10,13 @@ from app.api.dependencies import CurrentUser
 from app.db.database import get_db
 from app.schemas.memory import (
     AttachmentBatchCreate, AttachmentPatch, AttachmentResponse, DeleteResponse,
-    FragmentCreate, FragmentPage, FragmentPatch, FragmentResponse, MediaAssetPage,
+    FragmentCreate, FragmentCreatedResponse, FragmentPage, FragmentPatch, FragmentResponse, MediaAssetPage,
     MediaAssetResponse, SessionCreate, SessionDetail, SessionPage, SessionPatch,
     SessionSummary, UploadAuthorizationRequest, UploadAuthorizationResponse,
     UploadCompleteRequest,
 )
+from app.schemas.memory_extraction import ExtractionRequest
+from app.services.memory_extraction_service import MemoryExtractionService, get_memory_extraction_service
 from app.services.object_storage_service import ObjectStorageService, get_object_storage_service
 from app.services.memory_service import MemoryService
 
@@ -90,10 +92,46 @@ def delete_asset(asset_id: int, user: CurrentUser, db: Annotated[Session, Depend
     return {"id": asset_id, "deleted": True}
 
 
-@router.post("/recording-sessions/{session_id}/fragments", response_model=FragmentResponse, status_code=status.HTTP_201_CREATED, summary="保存语音片段和 ASR 转写")
-def create_fragment(session_id: int, body: FragmentCreate, user: CurrentUser, db: Annotated[Session, Depends(get_db)], service: Annotated[MemoryService, Depends(MemoryService)], storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)]):
-    fragment = service.create_fragment(db, user, session_id, body)
-    return service.get_fragment(db, user, session_id, fragment.id, storage)
+# [删除-旧] 片段创建只保存素材并返回片段。
+# @router.post("/recording-sessions/{session_id}/fragments", response_model=FragmentResponse, status_code=status.HTTP_201_CREATED, summary="保存语音片段和 ASR 转写")
+# def create_fragment(session_id: int, body: FragmentCreate, user: CurrentUser, db: Annotated[Session, Depends(get_db)], service: Annotated[MemoryService, Depends(MemoryService)], storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)]):
+#     fragment = service.create_fragment(db, user, session_id, body)
+#     return service.get_fragment(db, user, session_id, fragment.id, storage)
+# [新增] 保存片段与登记任务共用事务，提交后才调用模型。
+@router.post("/recording-sessions/{session_id}/fragments", response_model=FragmentCreatedResponse, status_code=status.HTTP_201_CREATED, summary="保存素材片段并尝试记忆抽取")
+def create_fragment(
+    session_id: int, body: FragmentCreate, user: CurrentUser, db: Annotated[Session, Depends(get_db)],
+    service: Annotated[MemoryService, Depends(MemoryService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+    extraction: Annotated[MemoryExtractionService, Depends(get_memory_extraction_service)],
+):
+    job_id = None
+    created = False
+    skip_reason = None
+
+    def enqueue(fragment):
+        nonlocal job_id, created, skip_reason
+        if not extraction.model.available:
+            skip_reason = "EXTRACTION_UNAVAILABLE"
+            return
+        try:
+            job_id, created = extraction.enqueue(
+                db, user, session_id, fragment.id,
+                ExtractionRequest(allow_external_processing=body.allow_external_processing),
+            )
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404, 409, 422, 503}:
+                raise
+            skip_reason = exc.detail.get("code", "SOURCE_ACCESS_LOST") if isinstance(exc.detail, dict) else "SOURCE_ACCESS_LOST"
+
+    fragment = service.create_fragment(db, user, session_id, body, after_flush=enqueue)
+    if created:
+        extraction.run(db, job_id=job_id, storage=storage)
+    result = service.get_fragment(db, user, session_id, fragment.id, storage)
+    if job_id is not None:
+        result["extraction_job"] = extraction.get_job(db, user, session_id, job_id)
+    result["extraction_skip_reason"] = skip_reason
+    return result
 
 
 @router.get("/recording-sessions/{session_id}/fragments", response_model=FragmentPage, summary="分页查询语音片段")

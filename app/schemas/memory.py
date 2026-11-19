@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
+from app.schemas.memory_extraction import ExtractionJobResponse
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 
 
@@ -117,6 +118,7 @@ class FragmentCreate(BaseModel):
     content_text: str | None = None
     transcript_raw: str | None = None
     recorded_at: datetime | None = None
+    allow_external_processing: StrictBool = False
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -183,6 +185,11 @@ class FragmentResponse(BaseModel):
     # [移除] 旧客户端仍可读取 audio；非音频片段为 null。
     # audio: MediaAssetResponse | None = None
     attachments: list[AttachmentResponse] = Field(default_factory=list)
+
+
+class FragmentCreatedResponse(FragmentResponse):
+    extraction_job: ExtractionJobResponse | None = None
+    extraction_skip_reason: str | None = None
 
 
 class FragmentPage(PageResponse):

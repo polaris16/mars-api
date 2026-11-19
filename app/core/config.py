@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     object_storage_max_video_bytes: int = Field(default=524288000, gt=0)
     object_storage_max_text_bytes: int = Field(default=5242880, gt=0)
 
+    # Only the text model is used by Stage 2. The other model groups remain examples.
+    ai_text_enabled: bool = False
+    ai_text_provider: str = "mock"
+    ai_text_base_url: str = ""
+    ai_text_api_key: SecretStr = SecretStr("")
+    ai_text_model: str = ""
+    ai_text_sync_wait_seconds: float = Field(default=5, gt=0, le=30)
+    ai_text_timeout_seconds: float = Field(default=30, gt=0, le=180)
+    ai_text_max_input_chars: int = Field(default=20000, ge=1, le=500000)
+    ai_text_max_attempts: int = Field(default=3, ge=1, le=10)
+
     @property
     def database_url(self) -> URL:
         """使用原始密码构造 URL，避免特殊字符被误解析。"""
