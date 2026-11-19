@@ -7,12 +7,15 @@ from app.models.t_interest_domain import InterestDomain
 from app.models.t_fragment_attachment import FragmentAttachment
 from app.models.t_media_asset import MediaAsset
 from app.models.t_memory_fragment import MemoryFragment
+from app.models.t_memory_contributor import MemoryContributor
 from app.models.t_memory_session import MemorySession
+from app.models.t_memory_session_member import MemorySessionMember
 from app.models.t_user import User
 from app.models.t_topic import Topic
 from app.models.t_topic_interest import TopicInterest
 from app.models.t_topic_participant import TopicParticipant
 from app.models.t_user_interest import UserInterest
+from app.models.t_user_relationship import UserRelationship
 
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
@@ -27,6 +30,9 @@ __all__ = [
     "TopicInterest",
     "TopicParticipant",
     "MemorySession",
+    "MemorySessionMember",
+    "MemoryContributor",
+    "UserRelationship",
     "MediaAsset",
     "MemoryFragment",
     "FragmentAttachment",
