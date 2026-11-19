@@ -5,12 +5,12 @@ import hmac
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import FragmentAttachment, MediaAsset, MemoryContributor, MemoryFragment, MemorySession, User, Topic
+from app.models import FragmentAttachment, MediaAsset, MemoryContributor, MemoryFragment, MemorySession, MemorySessionMember, User, Topic
 from app.schemas.memory import (
     AttachmentBatchCreate,
     AttachmentPatch,
@@ -23,6 +23,8 @@ from app.schemas.memory import (
     UploadCompleteRequest,
 )
 from app.services.object_storage_service import ObjectStorageService
+from app.services.memory_contributor_service import MemoryContributorService
+from app.services.memory_session_member_service import MemorySessionMemberService
 from app.services.topic_service import TopicService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
@@ -35,19 +37,58 @@ class MemoryService:
     def _not_found() -> HTTPException:
         return HTTPException(status_code=404, detail="资源不存在")
 
-    @staticmethod
-    def _session(session: Session, user_id: int, session_id: int, lock: bool = False) -> MemorySession:
+    def __init__(self) -> None:
+        self.members = MemorySessionMemberService()
+        self.contributors = MemoryContributorService()
+
+    def _session_access(
+        self, session: Session, user_id: int, session_id: int, *, lock: bool = False, owner_only: bool = False,
+    ) -> tuple[MemorySession, str]:
         query = select(MemorySession).where(
             MemorySession.id == session_id,
-            MemorySession.owner_user_id == user_id,
             MemorySession.is_del.is_(False),
         )
         if lock:
             query = query.with_for_update()
         row = session.scalar(query)
-        if row is None:
-            raise MemoryService._not_found()
-        return row
+        if row is None or (owner_only and row.owner_user_id != user_id):
+            raise self._not_found()
+        if row.owner_user_id == user_id:
+            return row, "owner"
+        member = session.scalar(select(MemorySessionMember).where(
+            MemorySessionMember.session_id == session_id,
+            MemorySessionMember.user_id == user_id,
+            MemorySessionMember.is_del.is_(False),
+        ))
+        if member is None or not self._shared_access_is_effective(session, row, member):
+            raise self._not_found()
+        return row, member.role
+
+    def _shared_access_is_effective(
+        self, session: Session, memory: MemorySession, member: MemorySessionMember,
+    ) -> bool:
+        owner_active = session.scalar(select(User.id).where(
+            User.id == memory.owner_user_id, User.is_del.is_(False),
+        )) is not None
+        return owner_active and self.members.is_member_effective(
+            session, memory.owner_user_id, member, datetime.now(timezone.utc),
+        )
+
+    def _require_contribution(
+        self, session: Session, memory: MemorySession, user: User, role: str,
+    ) -> MemoryContributor | None:
+        if role == "owner":
+            return None
+        if role not in {"contributor", "editor"}:
+            raise HTTPException(status_code=403, detail="没有素材贡献权限")
+        return self.contributors.require_consented_contributor(session, memory, user)
+
+    def _require_material_edit(
+        self, session: Session, memory: MemorySession, user: User, role: str, contributor_id: int,
+    ) -> None:
+        contributor = self._require_contribution(session, memory, user, role)
+        if role == "contributor" and contributor.id != contributor_id:
+            raise HTTPException(status_code=403, detail="只能修改本人提供的素材")
 
     @staticmethod
     def _owner_contributor(session: Session, memory_session: MemorySession, user: User) -> MemoryContributor:
@@ -75,24 +116,25 @@ class MemoryService:
             session.flush()
         return contributor
 
-    @staticmethod
-    def _fragment(session: Session, user_id: int, fragment_id: int, lock: bool = False) -> MemoryFragment:
-        query = (
-            select(MemoryFragment)
-            .join(MemorySession, MemorySession.id == MemoryFragment.session_id)
-            .where(
-                MemoryFragment.id == fragment_id,
-                MemoryFragment.is_del.is_(False),
-                MemorySession.owner_user_id == user_id,
-                MemorySession.is_del.is_(False),
-            )
+    def _fragment_access(
+        self, session: Session, user_id: int, fragment_id: int, *,
+        lock: bool = False, expected_session_id: int | None = None,
+    ) -> tuple[MemoryFragment, MemorySession, str]:
+        filters = (MemoryFragment.id == fragment_id, MemoryFragment.is_del.is_(False))
+        session_id = session.scalar(select(MemoryFragment.session_id).where(*filters))
+        if session_id is None or (expected_session_id is not None and session_id != expected_session_id):
+            raise self._not_found()
+        # Lock the session before the fragment, matching membership and consent changes.
+        memory, role = self._session_access(session, user_id, session_id, lock=lock)
+        query = select(MemoryFragment).where(
+            *filters, MemoryFragment.session_id == session_id,
         )
         if lock:
             query = query.with_for_update()
         row = session.scalar(query)
         if row is None:
             raise MemoryService._not_found()
-        return row
+        return row, memory, role
 
     @staticmethod
     def _asset(session: Session, user_id: int, asset_id: int, lock: bool = False) -> MediaAsset:
@@ -135,7 +177,7 @@ class MemoryService:
         settings = get_settings()
         url = None
         expires = None
-        if storage is not None and asset.upload_status in {"uploaded", "attached"}:
+        if storage is not None and not asset.is_del and asset.upload_status in {"uploaded", "attached"}:
             url = storage.create_read_url(asset.object_key, settings.object_storage_read_ttl_seconds)
             expires = datetime.now(timezone.utc) + timedelta(seconds=settings.object_storage_read_ttl_seconds)
         return MediaAssetResponse(
@@ -183,15 +225,33 @@ class MemoryService:
         return row
 
     def list_sessions(self, session: Session, user: User, page: int, page_size: int, sort: str, order: str, is_favorite: bool | None) -> dict:
-        filters = [MemorySession.owner_user_id == user.id, MemorySession.is_del.is_(False)]
+        user_id = user.id
+        filters = [MemorySession.is_del.is_(False), or_(
+            MemorySession.owner_user_id == user_id, MemorySessionMember.id.is_not(None),
+        )]
         if is_favorite is not None:
             filters.append(MemorySession.is_favorite.is_(is_favorite))
-        total = session.scalar(select(func.count(MemorySession.id)).where(*filters)) or 0
         sort_column = MemorySession.created_at if sort == "created_at" else func.coalesce(MemorySession.last_material_at, MemorySession.created_at)
         ordering = sort_column.desc() if order == "desc" else sort_column.asc()
-        rows = session.scalars(select(MemorySession).where(*filters).order_by(ordering, MemorySession.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        candidates = session.execute(
+            select(MemorySession, MemorySessionMember)
+            .outerjoin(MemorySessionMember, (
+                (MemorySessionMember.session_id == MemorySession.id)
+                & (MemorySessionMember.user_id == user_id)
+                & (MemorySessionMember.status == "active")
+                & MemorySessionMember.is_del.is_(False)
+                & or_(MemorySessionMember.valid_until.is_(None), MemorySessionMember.valid_until > datetime.now(timezone.utc))
+            ))
+            .where(*filters)
+            .order_by(ordering, MemorySession.id.desc()),
+        )
+        # Filter invalid source relationships before counting or slicing a page.
+        rows = [row for row, member in candidates if row.owner_user_id == user_id
+                or self._shared_access_is_effective(session, row, member)]
+        total = len(rows)
+        start = (page - 1) * page_size
         items = []
-        for row in rows:
+        for row in rows[start:start + page_size]:
             fragment_count = session.scalar(select(func.count(MemoryFragment.id)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
             attachment_count = session.scalar(select(func.count(FragmentAttachment.id)).join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False), FragmentAttachment.is_del.is_(False))) or 0
             duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.source_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
@@ -208,7 +268,7 @@ class MemoryService:
             raise HTTPException(status_code=422, detail="话题不存在或未启用")
         session.rollback()
         with session.begin():
-            row = self._session(session, user.id, session_id, lock=True)
+            row, _ = self._session_access(session, user.id, session_id, lock=True, owner_only=True)
             for key, value in values.items():
                 setattr(row, key, value)
             row.updated_by = user.id
@@ -216,7 +276,7 @@ class MemoryService:
 
     def delete_session(self, session: Session, user: User, session_id: int) -> None:
         with session.begin():
-            row = self._session(session, user.id, session_id, lock=True)
+            row, _ = self._session_access(session, user.id, session_id, lock=True, owner_only=True)
             now = datetime.now(timezone.utc)
             row.is_del = True
             row.updated_by = user.id
@@ -244,29 +304,37 @@ class MemoryService:
         if body.purpose == "recording":
             if body.media_type != "audio" or body.session_id is None or body.fragment_id is not None:
                 raise HTTPException(status_code=422, detail="录音上传需要 audio 类型和 session_id")
-            self._session(session, user_id, body.session_id)
         elif body.purpose == "attachment":
             if body.media_type not in {"image", "video", "audio"} or body.fragment_id is None or body.session_id is not None:
                 raise HTTPException(status_code=422, detail="附件上传需要 fragment_id")
-            self._fragment(session, user_id, body.fragment_id)
         else:
             if body.media_type not in {"text", "video"} or body.session_id is None or body.fragment_id is not None:
                 raise HTTPException(status_code=422, detail="source upload requires text/video and session_id")
-            self._session(session, user_id, body.session_id)
         limits = {"audio": settings.object_storage_max_audio_bytes, "image": settings.object_storage_max_image_bytes, "video": settings.object_storage_max_video_bytes, "text": settings.object_storage_max_text_bytes}
         if body.size_bytes > limits[body.media_type]:
             raise HTTPException(status_code=413, detail="文件超过允许大小")
         if body.media_type == "image" and not body.content_type.startswith("image/") or body.media_type == "video" and not body.content_type.startswith("video/") or body.media_type == "audio" and not body.content_type.startswith("audio/") or body.media_type == "text" and not body.content_type.startswith("text/"):
             raise HTTPException(status_code=422, detail="文件类型与 Content-Type 不匹配")
-        if body.sha256:
-            existing = session.scalar(select(MediaAsset).where(MediaAsset.uploaded_by_user_id == user_id, MediaAsset.purpose == body.purpose, MediaAsset.media_type == body.media_type, MediaAsset.content_sha256 == body.sha256.lower(), MediaAsset.size_bytes == body.size_bytes, MediaAsset.upload_status.in_(["uploaded", "attached"]), MediaAsset.is_del.is_(False)))
-            if existing:
-                return {"reused": True, "asset_id": existing.id}
         session.rollback()
         now = datetime.now(timezone.utc)
-        key = f"users/{user_id}/{body.purpose}/{uuid.uuid4().hex}"
         expires_at = now + timedelta(seconds=settings.object_storage_upload_ttl_seconds)
         with session.begin():
+            if body.fragment_id is not None:
+                _, memory, role = self._fragment_access(session, user_id, body.fragment_id, lock=True)
+            else:
+                memory, role = self._session_access(session, user_id, body.session_id, lock=True)
+            self._require_contribution(session, memory, user, role)
+            if body.sha256:
+                existing = session.scalar(select(MediaAsset).where(
+                    MediaAsset.uploaded_by_user_id == user_id, MediaAsset.purpose == body.purpose,
+                    MediaAsset.media_type == body.media_type, MediaAsset.content_sha256 == body.sha256.lower(),
+                    MediaAsset.size_bytes == body.size_bytes, MediaAsset.upload_status.in_(["uploaded", "attached"]),
+                    MediaAsset.is_del.is_(False),
+                ))
+                if existing is not None:
+                    return {"reused": True, "asset_id": existing.id}
+            # Store the grant target in the server-generated key so pending uploads can be reauthorized.
+            key = f"users/{user_id}/{body.purpose}/scope/{memory.id}/{body.fragment_id or 0}/{uuid.uuid4().hex}"
             asset = MediaAsset(uploaded_by_user_id=user_id, purpose=body.purpose, media_type=body.media_type, storage_provider=storage.provider, storage_region=storage.region, bucket_name=storage.bucket, object_key=key, original_filename=body.filename, content_type=body.content_type, expected_size_bytes=body.size_bytes, expected_sha256=body.sha256.lower() if body.sha256 else None, upload_status="pending_upload", upload_expires_at=expires_at, created_by=user_id, updated_by=user_id)
             session.add(asset)
             session.flush()
@@ -281,6 +349,23 @@ class MemoryService:
         if asset.upload_status != "pending_upload" or expires_at <= datetime.now(timezone.utc):
             raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
 
+    def _check_upload_scope(self, session: Session, user: User, key: str, *, lock: bool) -> None:
+        parts = key.split("/")
+        if len(parts) < 4 or parts[3] != "scope":
+            return
+        try:
+            _, _, _, _, session_id, fragment_id, _ = parts
+            session_id, fragment_id = int(session_id), int(fragment_id)
+        except ValueError:
+            raise self._not_found() from None
+        if fragment_id:
+            _, memory, role = self._fragment_access(
+                session, user.id, fragment_id, lock=lock, expected_session_id=session_id,
+            )
+        else:
+            memory, role = self._session_access(session, user.id, session_id, lock=lock)
+        self._require_contribution(session, memory, user, role)
+
     def complete_upload(self, session: Session, user: User, asset_id: int, body: UploadCompleteRequest, storage: ObjectStorageService) -> MediaAsset:
         user_id = user.id
         asset = self._asset(session, user_id, asset_id)
@@ -289,6 +374,7 @@ class MemoryService:
         self._require_pending_upload(asset)
         purpose, media_type = asset.purpose, asset.media_type
         object_key, expected_size = asset.object_key, asset.expected_size_bytes
+        self._check_upload_scope(session, user, object_key, lock=False)
         expected_sha256, declared_type = asset.expected_sha256, asset.content_type
         # Release the read transaction while the object is being downloaded and hashed.
         session.rollback()
@@ -307,6 +393,7 @@ class MemoryService:
             raise HTTPException(status_code=422, detail="已上传文件 SHA-256 与声明不符")
         try:
             with session.begin():
+                self._check_upload_scope(session, user, object_key, lock=True)
                 # Another request may have confirmed or linked the object during the hash check.
                 asset = self._asset(session, user_id, asset_id, lock=True)
                 if asset.upload_status in {"uploaded", "attached"}:
@@ -322,6 +409,7 @@ class MemoryService:
         except IntegrityError:
             # 并发上传同一文件时，部分唯一索引可能由另一请求先成功占用。
             with session.begin():
+                self._check_upload_scope(session, user, object_key, lock=True)
                 pending = self._asset(session, user_id, asset_id, lock=True)
                 if pending.upload_status in {"uploaded", "attached"}:
                     return pending
@@ -369,22 +457,21 @@ class MemoryService:
         # [新增] 统一处理文本、音频、视频片段，并在每条素材记录上保存提供者。
         # [COMPAT] Keep audio_asset_id accepted as a source_asset_id alias.
         source_asset_id = body.source_asset_id or body.audio_asset_id
-        asset = self._asset(session, user.id, source_asset_id) if source_asset_id is not None else None
-        if body.source_type == "audio" and (asset is None or asset.purpose != "recording" or asset.media_type != "audio"):
-            raise HTTPException(status_code=422, detail="audio fragment requires a recording asset")
-        if body.source_type == "video" and (asset is None or asset.purpose != "source" or asset.media_type != "video"):
-            raise HTTPException(status_code=422, detail="video fragment requires a video source asset")
-        if body.source_type == "text" and asset is not None and (asset.purpose != "source" or asset.media_type != "text"):
-            raise HTTPException(status_code=422, detail="text fragment asset must be a text source")
-        if asset is not None and asset.upload_status not in {"uploaded", "attached"}:
-            raise HTTPException(status_code=422, detail="source asset upload is not complete")
-        session.rollback()
         with session.begin():
-            row = self._session(session, user.id, session_id, lock=True)
-            if asset is not None:
-                asset = self._asset(session, user.id, asset.id, lock=True)
+            row, role = self._session_access(session, user.id, session_id, lock=True)
+            contributor = self._require_contribution(session, row, user, role)
+            asset = self._asset(session, user.id, source_asset_id, lock=True) if source_asset_id is not None else None
+            if body.source_type == "audio" and (asset is None or asset.purpose != "recording" or asset.media_type != "audio"):
+                raise HTTPException(status_code=422, detail="audio fragment requires a recording asset")
+            if body.source_type == "video" and (asset is None or asset.purpose != "source" or asset.media_type != "video"):
+                raise HTTPException(status_code=422, detail="video fragment requires a video source asset")
+            if body.source_type == "text" and asset is not None and (asset.purpose != "source" or asset.media_type != "text"):
+                raise HTTPException(status_code=422, detail="text fragment asset must be a text source")
+            if asset is not None and asset.upload_status not in {"uploaded", "attached"}:
+                raise HTTPException(status_code=422, detail="source asset upload is not complete")
             last_no = session.scalar(select(func.max(MemoryFragment.sequence_no)).where(MemoryFragment.session_id == row.id)) or 0
-            contributor = self._owner_contributor(session, row, user)
+            if contributor is None:
+                contributor = self._owner_contributor(session, row, user)
             fragment = MemoryFragment(
                 session_id=row.id,
                 sequence_no=last_no + 1,
@@ -409,7 +496,7 @@ class MemoryService:
         return fragment
 
     def list_fragments(self, session: Session, user: User, session_id: int, page: int, page_size: int, storage: ObjectStorageService | None = None) -> dict:
-        self._session(session, user.id, session_id)
+        self._session_access(session, user.id, session_id)
         total = session.scalar(select(func.count(MemoryFragment.id)).where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False))) or 0
         rows = session.scalars(select(MemoryFragment).where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no).offset((page - 1) * page_size).limit(page_size)).all()
         return {"items": [self._fragment_response(session, row, storage) for row in rows], "page": page, "page_size": page_size, "total": total}
@@ -434,33 +521,32 @@ class MemoryService:
         }
 
     def get_fragment(self, session: Session, user: User, session_id: int, fragment_id: int, storage: ObjectStorageService) -> dict:
-        self._session(session, user.id, session_id)
-        fragment = self._fragment(session, user.id, fragment_id)
-        if fragment.session_id != session_id:
-            raise self._not_found()
+        fragment, _, _ = self._fragment_access(session, user.id, fragment_id, expected_session_id=session_id)
         return self._fragment_response(session, fragment, storage)
 
     def patch_fragment(self, session: Session, user: User, session_id: int, fragment_id: int, body: FragmentPatch) -> MemoryFragment:
         with session.begin():
-            self._session(session, user.id, session_id)
-            fragment = self._fragment(session, user.id, fragment_id, lock=True)
-            if fragment.session_id != session_id:
-                raise self._not_found()
+            fragment, memory, role = self._fragment_access(
+                session, user.id, fragment_id, lock=True, expected_session_id=session_id,
+            )
+            self._require_material_edit(session, memory, user, role, fragment.contributor_id)
             fragment.transcript_edited = body.transcript_edited
             fragment.updated_by = user.id
         return fragment
 
     def delete_fragment(self, session: Session, user: User, session_id: int, fragment_id: int) -> None:
         with session.begin():
-            self._session(session, user.id, session_id, lock=True)
-            fragment = self._fragment(session, user.id, fragment_id, lock=True)
-            if fragment.session_id != session_id:
-                raise self._not_found()
+            fragment, memory, role = self._fragment_access(
+                session, user.id, fragment_id, lock=True, expected_session_id=session_id,
+            )
+            self._require_material_edit(session, memory, user, role, fragment.contributor_id)
             now = datetime.now(timezone.utc)
             fragment.is_del = True
             fragment.updated_by = user.id
             fragment.updated_at = now
             attachments = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False))).all()
+            if role == "contributor" and any(item.contributor_id != fragment.contributor_id for item in attachments):
+                raise HTTPException(status_code=403, detail="该片段含其他成员的附件")
             affected_asset_ids = {attachment.media_asset_id for attachment in attachments}
             for attachment in attachments:
                 attachment.is_del = True
@@ -472,9 +558,10 @@ class MemoryService:
 
     def create_attachments(self, session: Session, user: User, fragment_id: int, body: AttachmentBatchCreate, storage: ObjectStorageService | None = None) -> list[dict]:
         with session.begin():
-            fragment = self._fragment(session, user.id, fragment_id, lock=True)
-            memory_session = self._session(session, user.id, fragment.session_id, lock=True)
-            contributor = self._owner_contributor(session, memory_session, user)
+            fragment, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
+            contributor = self._require_contribution(session, memory, user, role)
+            if contributor is None:
+                contributor = self._owner_contributor(session, memory, user)
             current = session.scalar(select(func.count(FragmentAttachment.id)).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False))) or 0
             if current + len(body.items) > MAX_ATTACHMENTS_PER_FRAGMENT:
                 raise HTTPException(status_code=422, detail="每段语音最多关联 9 个附件")
@@ -510,7 +597,7 @@ class MemoryService:
         return {"id": link.id, "fragment_id": link.fragment_id, "contributor_id": link.contributor_id, "asset": self._asset_response(asset, storage), "caption": link.caption, "sort_order": link.sort_order, "created_at": link.created_at}
 
     def list_attachments(self, session: Session, user: User, fragment_id: int, storage: ObjectStorageService) -> list[dict]:
-        self._fragment(session, user.id, fragment_id)
+        self._fragment_access(session, user.id, fragment_id)
         rows = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)).order_by(FragmentAttachment.sort_order, FragmentAttachment.id)).all()
         return [self._attachment_response(session, row, storage) for row in rows]
 
@@ -519,10 +606,11 @@ class MemoryService:
         if not values:
             raise HTTPException(status_code=422, detail="至少提供一个要更新的字段")
         with session.begin():
-            self._fragment(session, user.id, fragment_id, lock=True)
+            _, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
             link = session.scalar(select(FragmentAttachment).where(FragmentAttachment.id == attachment_id, FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)))
             if link is None:
                 raise self._not_found()
+            self._require_material_edit(session, memory, user, role, link.contributor_id)
             for key, value in values.items():
                 setattr(link, key, value)
             link.updated_by = user.id
@@ -530,17 +618,16 @@ class MemoryService:
 
     def delete_attachment(self, session: Session, user: User, fragment_id: int, attachment_id: int) -> None:
         with session.begin():
-            self._fragment(session, user.id, fragment_id, lock=True)
+            _, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
             link = session.scalar(select(FragmentAttachment).where(FragmentAttachment.id == attachment_id, FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)))
             if link is None:
                 raise self._not_found()
+            self._require_material_edit(session, memory, user, role, link.contributor_id)
             now = datetime.now(timezone.utc)
             link.is_del = True
             link.updated_by = user.id
             link.updated_at = now
-            asset = self._asset(session, user.id, link.media_asset_id, lock=True)
-            session.flush()
-            self._refresh_asset_status(session, asset)
+            self._refresh_assets_after_unlink(session, {link.media_asset_id})
 
     def list_assets(self, session: Session, user: User, page: int, page_size: int, purpose: str | None, media_type: str | None, storage: ObjectStorageService) -> dict:
         filters = [MediaAsset.uploaded_by_user_id == user.id, MediaAsset.is_del.is_(False), MediaAsset.upload_status.in_(["uploaded", "attached"])]
@@ -567,7 +654,7 @@ class MemoryService:
             asset.updated_by = user.id
 
     def get_session_detail(self, session: Session, user: User, session_id: int, storage: ObjectStorageService) -> dict:
-        row = self._session(session, user.id, session_id)
+        row, _ = self._session_access(session, user.id, session_id)
         fragments = session.scalars(select(MemoryFragment).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no)).all()
         attachment_count = session.scalar(select(func.count(FragmentAttachment.id)).join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False), FragmentAttachment.is_del.is_(False))) or 0
         duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.source_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0

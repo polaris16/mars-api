@@ -44,7 +44,7 @@ class UserRelationshipService:
         return row.status
 
     @classmethod
-    def _is_confirmed_family_pair(cls, rows: list[UserRelationship], now: datetime) -> bool:
+    def is_confirmed_family_pair(cls, rows: list[UserRelationship], now: datetime) -> bool:
         if len(rows) != 2:
             return False
         first, second = rows
@@ -105,7 +105,7 @@ class UserRelationshipService:
             row = next((item for item in visible if item.subject_user_id == user_id), visible[0])
             status = self._effective_status(row, now)
             if row.relationship_type == "family" and status == "active":
-                if not self._is_confirmed_family_pair(group, now):
+                if not self.is_confirmed_family_pair(group, now):
                     status = "requires_confirmation"
             result.append(RelationshipRecordResponse.model_validate(row).model_copy(update={"status": status}))
         return RelationshipListResponse(items=result, page=page, page_size=page_size, total=total)
@@ -150,7 +150,7 @@ class UserRelationshipService:
                 for row in existing:
                     groups[row.relationship_pair_id].append(row)
                 duplicate = any(row.status == "pending" for row in existing) or any(
-                    self._is_confirmed_family_pair(group, now) for group in groups.values()
+                    self.is_confirmed_family_pair(group, now) for group in groups.values()
                 )
             else:
                 duplicate = bool(existing)
@@ -264,7 +264,7 @@ class UserRelationshipService:
             now = datetime.now(timezone.utc)
             if self._effective_status(row, now) != "active":
                 raise HTTPException(status_code=409, detail="只有有效关系可以撤销")
-            if len(pair) > 1 and not self._is_confirmed_family_pair(pair, now):
+            if len(pair) > 1 and not self.is_confirmed_family_pair(pair, now):
                 raise HTTPException(status_code=409, detail="关系组记录不一致")
             pair = [member for member in pair if member.status == "active"]
             for member in pair:
