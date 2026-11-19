@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import binascii
+import codecs
 import hashlib
 import hmac
 import json
@@ -176,7 +177,17 @@ class ObjectStorageService:
             raise HTTPException(status_code=404, detail="Mock 文件信息不存在") from exc
         return path, content_type
 
-    def inspect_and_hash(self, key: str, max_bytes: int) -> tuple[int, str, str, bytes]:
+    def inspect_and_hash(self, key: str, max_bytes: int, validate_utf8: bool = False) -> tuple[int, str, str, bytes]:
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")() if validate_utf8 else None
+
+        def validate_text_chunk(block: bytes, final: bool = False) -> None:
+            if utf8_decoder is None:
+                return
+            try:
+                utf8_decoder.decode(block, final=final)
+            except UnicodeDecodeError as exc:
+                raise HTTPException(status_code=422, detail="文本文件必须是有效的 UTF-8") from exc
+
         if self.mode == "mock":
             path = self._local_path(key)
             metadata_path = path.with_suffix(path.suffix + ".meta.json")
@@ -191,9 +202,11 @@ class ObjectStorageService:
                     size += len(block)
                     if size > max_bytes:
                         raise HTTPException(status_code=413, detail="上传文件超过已声明大小")
+                    validate_text_chunk(block)
                     if len(prefix) < 32:
                         prefix.extend(block[: 32 - len(prefix)])
                     digest.update(block)
+            validate_text_chunk(b"", final=True)
             return size, content_type, digest.hexdigest(), bytes(prefix)
 
         url = self._presign("GET", key, 120)
@@ -207,9 +220,11 @@ class ObjectStorageService:
                     size += len(block)
                     if size > max_bytes:
                         raise HTTPException(status_code=413, detail="OSS 文件超过已声明大小")
+                    validate_text_chunk(block)
                     if len(prefix) < 32:
                         prefix.extend(block[: 32 - len(prefix)])
                     digest.update(block)
+                validate_text_chunk(b"", final=True)
         except HTTPError as exc:
             if exc.code == 404:
                 raise HTTPException(status_code=409, detail="OSS 中未找到已上传文件") from exc

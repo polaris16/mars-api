@@ -268,6 +268,40 @@ def test_recording_media_real_database_business_flow(monkeypatch):
         )
         assert auxiliary_session.status_code == 201, auxiliary_session.text
         auxiliary_session_id = auxiliary_session.json()["id"]
+        direct_text = client.post(
+            f"/api/recording-sessions/{auxiliary_session_id}/fragments",
+            headers=headers,
+            json={"source_type": "text", "content_text": "A directly entered memory."},
+        )
+        assert direct_text.status_code == 201, direct_text.text
+        assert direct_text.json()["source_type"] == "text"
+        assert direct_text.json()["content_text"] == "A directly entered memory."
+        assert direct_text.json()["contributor_id"] > 0
+
+        text_bytes = "A memory imported from a text file.".encode("utf-8")
+        text_asset = upload_asset(
+            client, headers, purpose="source", media_type="text",
+            filename="memory.txt", content_type="text/plain; charset=utf-8",
+            content=text_bytes, session_id=auxiliary_session_id,
+        )
+        imported_text = client.post(
+            f"/api/recording-sessions/{auxiliary_session_id}/fragments",
+            headers=headers,
+            json={"source_type": "text", "source_asset_id": text_asset["id"]},
+        )
+        assert imported_text.status_code == 201, imported_text.text
+        assert imported_text.json()["source_asset"]["id"] == text_asset["id"]
+
+        assert client.delete(
+            f"/api/recording-sessions/{auxiliary_session_id}/fragments/{direct_text.json()['id']}",
+            headers=headers,
+        ).status_code == 200
+        assert client.delete(
+            f"/api/recording-sessions/{auxiliary_session_id}/fragments/{imported_text.json()['id']}",
+            headers=headers,
+        ).status_code == 200
+        assert client.delete(f"/api/media-assets/{text_asset['id']}", headers=headers).status_code == 200
+
         wav_two = pcm_wav(129)
         audio_two = upload_asset(
             client, headers, purpose="recording", media_type="audio",

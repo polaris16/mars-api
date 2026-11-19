@@ -23,8 +23,10 @@ class MediaAsset(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_media_asset_pkey"),
         UniqueConstraint("object_key", name="t_media_asset_object_key_key"),
-        CheckConstraint("purpose IN ('recording', 'attachment')", name="ck_t_media_asset_purpose"),
-        CheckConstraint("media_type IN ('audio', 'image', 'video')", name="ck_t_media_asset_media_type"),
+        # [删除-旧] purpose 仅允许 recording/attachment；现由下方约束增加 source。
+        # [删除-旧] media_type 仅允许 audio/image/video；现由下方约束增加 text。
+        CheckConstraint("purpose IN ('recording', 'source', 'attachment')", name="ck_t_media_asset_purpose"),
+        CheckConstraint("media_type IN ('audio', 'image', 'video', 'text')", name="ck_t_media_asset_media_type"),
         CheckConstraint(
             "upload_status IN ('pending_upload', 'uploaded', 'attached', 'failed', 'expired')",
             name="ck_t_media_asset_upload_status",
@@ -38,7 +40,7 @@ class MediaAsset(Base):
         ),
         Index(
             "uq_t_media_asset_owner_content",
-            "user_id",
+            "uploaded_by_user_id",
             "purpose",
             "content_sha256",
             "size_bytes",
@@ -49,19 +51,23 @@ class MediaAsset(Base):
                 "AND upload_status IN ('uploaded', 'attached')"
             ),
         ),
-        Index("idx_t_media_asset_user_status", "user_id", "upload_status"),
+        # [新增] 用上传账户字段限定素材库查询。
+        Index("idx_t_media_asset_uploaded_by_status", "uploaded_by_user_id", "upload_status"),
         {"comment": "用户媒体对象与上传记录"},
     )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="媒体对象ID")
-    user_id = Column(
+    # [删除-旧] user_id 曾同时表达媒体对象所属用户；现明确为上传账户，提供者记录在片段/附件表。
+    # user_id = Column(BigInteger, ForeignKey("t_user.id", ondelete="CASCADE", name="fk_t_media_asset_user"), nullable=False, comment="所属用户ID")
+    # [新增] 上传账户与素材提供者分开表达。
+    uploaded_by_user_id = Column(
         BigInteger,
-        ForeignKey("t_user.id", ondelete="CASCADE", name="fk_t_media_asset_user"),
+        ForeignKey("t_user.id", ondelete="CASCADE", name="fk_t_media_asset_uploaded_by"),
         nullable=False,
-        comment="所属用户ID",
+        comment="上传账户ID",
     )
-    purpose = Column(String(30), nullable=False, comment="用途：recording/attachment")
-    media_type = Column(String(20), nullable=False, comment="媒体类型：audio/image/video")
+    purpose = Column(String(30), nullable=False, comment="用途：recording/source/attachment")
+    media_type = Column(String(20), nullable=False, comment="媒体类型：audio/image/video/text")
     storage_provider = Column(String(40), nullable=False, comment="对象存储提供商")
     storage_region = Column(String(50), nullable=False, comment="对象存储地域")
     bucket_name = Column(String(63), nullable=False, comment="对象存储Bucket")

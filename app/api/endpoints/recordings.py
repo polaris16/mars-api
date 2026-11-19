@@ -75,7 +75,7 @@ def complete_upload(asset_id: int, body: UploadCompleteRequest, user: CurrentUse
 
 
 @router.get("/media-assets", response_model=MediaAssetPage, summary="分页查询素材库")
-def list_assets(user: CurrentUser, db: Annotated[Session, Depends(get_db)], service: Annotated[RecordingService, Depends(RecordingService)], storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)], page: Annotated[int, Query(ge=1)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = 20, purpose: Literal["recording", "attachment"] | None = None, media_type: Literal["audio", "image", "video"] | None = None):
+def list_assets(user: CurrentUser, db: Annotated[Session, Depends(get_db)], service: Annotated[RecordingService, Depends(RecordingService)], storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)], page: Annotated[int, Query(ge=1)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = 20, purpose: Literal["recording", "source", "attachment"] | None = None, media_type: Literal["audio", "image", "video", "text"] | None = None):
     return service.list_assets(db, user, page, page_size, purpose, media_type, storage)
 
 

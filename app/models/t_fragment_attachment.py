@@ -46,6 +46,13 @@ class FragmentAttachment(Base):
         nullable=False,
         comment="媒体对象ID",
     )
+    # [新增] 附件的提供者记录在关联表，不放在可被多人复用的文件对象上。
+    contributor_id = Column(
+        BigInteger,
+        ForeignKey("t_memory_contributor.id", ondelete="RESTRICT", name="fk_t_fragment_attachment_contributor"),
+        nullable=False,
+        comment="添加附件的提供者ID",
+    )
     caption = Column(String(200), nullable=True, comment="附件说明")
     sort_order = Column(Integer, nullable=False, server_default=text("0"), comment="展示顺序")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")

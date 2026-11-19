@@ -53,14 +53,26 @@ class SessionPage(PageResponse):
 
 
 class UploadAuthorizationRequest(BaseModel):
-    purpose: Literal["recording", "attachment"]
-    media_type: Literal["audio", "image", "video"]
+    purpose: Literal["recording", "source", "attachment"]
+    media_type: Literal["audio", "image", "video", "text"]
     filename: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
     content_type: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     size_bytes: int = Field(gt=0)
     sha256: Sha256 | None = None
     session_id: int | None = None
     fragment_id: int | None = None
+
+    @model_validator(mode="after")
+    def validate_purpose_and_binding(self):
+        if self.purpose == "recording":
+            valid = self.media_type == "audio" and self.session_id is not None and self.fragment_id is None
+        elif self.purpose == "source":
+            valid = self.media_type in {"text", "video"} and self.session_id is not None and self.fragment_id is None
+        else:
+            valid = self.media_type in {"audio", "image", "video"} and self.fragment_id is not None and self.session_id is None
+        if not valid:
+            raise ValueError("purpose, media_type, and session/fragment binding are inconsistent")
+        return self
 
 
 class UploadAuthorizationResponse(BaseModel):
@@ -97,9 +109,28 @@ class MediaAssetPage(PageResponse):
 
 
 class FragmentCreate(BaseModel):
-    audio_asset_id: int
+    # [保留兼容] 原录音客户端继续提交 audio_asset_id。
+    audio_asset_id: int | None = None
+    source_type: Literal["text", "audio", "video"] = "audio"
+    source_asset_id: int | None = None
+    content_text: str | None = None
     transcript_raw: str | None = None
     recorded_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if self.audio_asset_id is not None:
+            if self.source_asset_id is not None and self.source_asset_id != self.audio_asset_id:
+                raise ValueError("audio_asset_id 与 source_asset_id 不可冲突")
+            if self.source_type != "audio":
+                raise ValueError("audio_asset_id 仅适用于 audio 类型")
+        if self.source_type == "audio" and self.audio_asset_id is None and self.source_asset_id is None:
+            raise ValueError("audio 类型必须提供 source_asset_id")
+        if self.source_type == "video" and self.source_asset_id is None:
+            raise ValueError("video 类型必须提供 source_asset_id")
+        if self.source_type == "text" and not (self.content_text and self.content_text.strip()) and self.source_asset_id is None:
+            raise ValueError("text 类型必须提供 content_text 或 source_asset_id")
+        return self
 
 
 class FragmentPatch(BaseModel):
@@ -130,6 +161,7 @@ class AttachmentPatch(BaseModel):
 class AttachmentResponse(BaseModel):
     id: int
     fragment_id: int
+    contributor_id: int
     asset: MediaAssetResponse
     caption: str | None
     sort_order: int
@@ -140,10 +172,15 @@ class FragmentResponse(BaseModel):
     id: int
     session_id: int
     sequence_no: int
+    contributor_id: int
+    source_type: Literal["text", "audio", "video"]
+    source_asset: MediaAssetResponse | None = None
+    content_text: str | None = None
     transcript_raw: str | None
     transcript_edited: str | None
     recorded_at: datetime
-    audio: MediaAssetResponse
+    # [兼容] 旧客户端仍可读取 audio；非音频片段为 null。
+    audio: MediaAssetResponse | None = None
     attachments: list[AttachmentResponse] = Field(default_factory=list)
 
 

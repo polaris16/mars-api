@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     object_storage_max_audio_bytes: int = Field(default=104857600, gt=0)
     object_storage_max_image_bytes: int = Field(default=20971520, gt=0)
     object_storage_max_video_bytes: int = Field(default=524288000, gt=0)
+    object_storage_max_text_bytes: int = Field(default=5242880, gt=0)
 
     @property
     def database_url(self) -> URL:
