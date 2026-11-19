@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 from fastapi import HTTPException
@@ -5,9 +8,26 @@ import json
 
 from app.core.config import get_settings
 from app.models import FragmentAttachment, MediaAsset, MemoryFragment
-from app.schemas.recording import FragmentCreate, UploadAuthorizationRequest
+from app.schemas.recording import FragmentCreate, SessionSummary, UploadAuthorizationRequest
 from app.services.recording_service import RecordingService
 from app.services.object_storage_service import ObjectStorageService
+
+
+def test_session_summary_maps_persisted_last_material_at_to_api_field():
+    created_at = datetime.now(timezone.utc)
+    summary = SessionSummary.model_validate(
+        SimpleNamespace(
+            id=11,
+            topic_id=None,
+            title="未命名",
+            is_favorite=False,
+            last_material_at=created_at,
+            created_at=created_at,
+        )
+    )
+
+    assert summary.last_recorded_at == created_at
+    assert summary.model_dump()["last_recorded_at"] == created_at
 
 
 def test_fragment_create_accepts_legacy_audio_asset_id():

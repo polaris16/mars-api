@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 
 
@@ -40,7 +40,8 @@ class SessionSummary(BaseModel):
     topic_title: str | None = None
     title: str
     is_favorite: bool
-    last_recorded_at: datetime | None
+    # [UPDATED] Accept the persisted model name and the API response name while serializing consistently.
+    last_recorded_at: datetime | None = Field(validation_alias=AliasChoices("last_recorded_at", "last_material_at"))
     created_at: datetime
     fragment_count: int = 0
     attachment_count: int = 0

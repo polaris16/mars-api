@@ -6,9 +6,12 @@ from app.models import MemoryContributor, MemorySessionMember, UserRelationship
 def test_collaboration_models_register_expected_tables_and_columns():
     assert UserRelationship.__tablename__ == "t_user_relationship"
     assert {
-        "principal_user_id", "delegate_user_id", "relationship_type", "status",
-        "authorization_method", "valid_from", "valid_until",
+        "relationship_pair_id", "subject_user_id", "related_user_id", "relationship_type",
+        "relation_code", "status", "authorization_method", "initiated_by_user_id",
+        "valid_from", "valid_until",
     } <= set(UserRelationship.__table__.columns.keys())
+    assert all(column.comment for column in UserRelationship.__table__.columns)
+    assert "uq_t_user_relationship_pair_subject" in {constraint.name for constraint in UserRelationship.__table__.constraints}
 
     assert MemorySessionMember.__tablename__ == "t_memory_session_member"
     assert {
