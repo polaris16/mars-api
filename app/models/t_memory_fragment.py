@@ -17,7 +17,7 @@ class MemoryFragment(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="记忆片段ID")
     session_id = Column(
         BigInteger,
-        ForeignKey("t_recording_session.id", ondelete="CASCADE", name="fk_t_memory_fragment_session"),
+        ForeignKey("t_memory_session.id", ondelete="CASCADE", name="fk_t_memory_fragment_memory_session"),
         nullable=False,
         comment="所属录音会话ID",
     )

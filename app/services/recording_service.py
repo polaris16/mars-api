@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import FragmentAttachment, MediaAsset, MemoryFragment, RecordingSession, User, Topic
+from app.models import FragmentAttachment, MediaAsset, MemoryFragment, MemorySession, User, Topic
 from app.schemas.recording import (
     AttachmentBatchCreate,
     AttachmentPatch,
@@ -35,11 +35,11 @@ class RecordingService:
         return HTTPException(status_code=404, detail="资源不存在")
 
     @staticmethod
-    def _session(session: Session, user_id: int, session_id: int, lock: bool = False) -> RecordingSession:
-        query = select(RecordingSession).where(
-            RecordingSession.id == session_id,
-            RecordingSession.user_id == user_id,
-            RecordingSession.is_del.is_(False),
+    def _session(session: Session, user_id: int, session_id: int, lock: bool = False) -> MemorySession:
+        query = select(MemorySession).where(
+            MemorySession.id == session_id,
+            MemorySession.owner_user_id == user_id,
+            MemorySession.is_del.is_(False),
         )
         if lock:
             query = query.with_for_update()
@@ -52,12 +52,12 @@ class RecordingService:
     def _fragment(session: Session, user_id: int, fragment_id: int, lock: bool = False) -> MemoryFragment:
         query = (
             select(MemoryFragment)
-            .join(RecordingSession, RecordingSession.id == MemoryFragment.session_id)
+            .join(MemorySession, MemorySession.id == MemoryFragment.session_id)
             .where(
                 MemoryFragment.id == fragment_id,
                 MemoryFragment.is_del.is_(False),
-                RecordingSession.user_id == user_id,
-                RecordingSession.is_del.is_(False),
+                MemorySession.owner_user_id == user_id,
+                MemorySession.is_del.is_(False),
             )
         )
         if lock:
@@ -129,26 +129,26 @@ class RecordingService:
         )) or 0
         asset.upload_status = "attached" if fragment_ref + attachment_ref else "uploaded"
 
-    def create_session(self, session: Session, user: User, body: SessionCreate) -> RecordingSession:
+    def create_session(self, session: Session, user: User, body: SessionCreate) -> MemorySession:
         if body.topic_id is not None and session.scalar(select(Topic.id).where(
             Topic.id == body.topic_id, Topic.is_enabled.is_(True), Topic.is_del.is_(False)
         )) is None:
             raise HTTPException(status_code=422, detail="话题不存在或未启用")
         session.rollback()
         with session.begin():
-            row = RecordingSession(user_id=user.id, topic_id=body.topic_id, title=body.title, created_by=user.id, updated_by=user.id)
+            row = MemorySession(owner_user_id=user.id, topic_id=body.topic_id, title=body.title, created_by=user.id, updated_by=user.id)
             session.add(row)
             session.flush()
         return row
 
     def list_sessions(self, session: Session, user: User, page: int, page_size: int, sort: str, order: str, is_favorite: bool | None) -> dict:
-        filters = [RecordingSession.user_id == user.id, RecordingSession.is_del.is_(False)]
+        filters = [MemorySession.owner_user_id == user.id, MemorySession.is_del.is_(False)]
         if is_favorite is not None:
-            filters.append(RecordingSession.is_favorite.is_(is_favorite))
-        total = session.scalar(select(func.count(RecordingSession.id)).where(*filters)) or 0
-        sort_column = RecordingSession.created_at if sort == "created_at" else func.coalesce(RecordingSession.last_recorded_at, RecordingSession.created_at)
+            filters.append(MemorySession.is_favorite.is_(is_favorite))
+        total = session.scalar(select(func.count(MemorySession.id)).where(*filters)) or 0
+        sort_column = MemorySession.created_at if sort == "created_at" else func.coalesce(MemorySession.last_material_at, MemorySession.created_at)
         ordering = sort_column.desc() if order == "desc" else sort_column.asc()
-        rows = session.scalars(select(RecordingSession).where(*filters).order_by(ordering, RecordingSession.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        rows = session.scalars(select(MemorySession).where(*filters).order_by(ordering, MemorySession.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
         items = []
         for row in rows:
             fragment_count = session.scalar(select(func.count(MemoryFragment.id)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
@@ -156,10 +156,10 @@ class RecordingService:
             duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.audio_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
             topic_title = session.scalar(select(Topic.title).where(Topic.id == row.topic_id)) if row.topic_id else None
             excerpt = session.scalar(select(func.coalesce(MemoryFragment.transcript_edited, MemoryFragment.transcript_raw)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no.desc()).limit(1))
-            items.append({"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_recorded_at, "created_at": row.created_at, "fragment_count": fragment_count, "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None})
+            items.append({"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": fragment_count, "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None})
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
-    def patch_session(self, session: Session, user: User, session_id: int, body: SessionPatch) -> RecordingSession:
+    def patch_session(self, session: Session, user: User, session_id: int, body: SessionPatch) -> MemorySession:
         values = body.model_dump(exclude_unset=True)
         if not values:
             raise HTTPException(status_code=422, detail="至少提供一个要更新的字段")
@@ -294,7 +294,7 @@ class RecordingService:
             last_no = session.scalar(select(func.max(MemoryFragment.sequence_no)).where(MemoryFragment.session_id == row.id)) or 0
             fragment = MemoryFragment(session_id=row.id, sequence_no=last_no + 1, audio_asset_id=asset.id, transcript_raw=body.transcript_raw, recorded_at=body.recorded_at or datetime.now(timezone.utc), created_by=user.id, updated_by=user.id)
             session.add(fragment)
-            row.last_recorded_at = fragment.recorded_at
+            row.last_material_at = fragment.recorded_at
             row.updated_by = user.id
             asset.upload_status = "attached"
             asset.updated_by = user.id
@@ -450,4 +450,4 @@ class RecordingService:
         duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.audio_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
         topic_title = session.scalar(select(Topic.title).where(Topic.id == row.topic_id)) if row.topic_id else None
         excerpt = session.scalar(select(func.coalesce(MemoryFragment.transcript_edited, MemoryFragment.transcript_raw)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no.desc()).limit(1))
-        return {"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_recorded_at, "created_at": row.created_at, "fragment_count": len(fragments), "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None, "fragments": [self._fragment_response(session, f, storage) for f in fragments]}
+        return {"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": len(fragments), "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None, "fragments": [self._fragment_response(session, f, storage) for f in fragments]}
