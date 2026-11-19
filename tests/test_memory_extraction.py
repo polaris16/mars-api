@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+from uuid import uuid4
 
 import pytest
 from fastapi import Depends, HTTPException, Request
@@ -134,6 +135,75 @@ def test_synchronous_extraction_is_idempotent_and_provenance_is_scoped(extractio
         assert source not in json.dumps(db.get(AIProcessingJob, job["id"]).input_payload, ensure_ascii=False)
     assert client.delete(f"{FRAGMENTS}/{fragment['id']}", headers=OWNER).status_code == 200
     assert client.get(f"{url}/provenance", headers=VIEWER).status_code == 404
+
+
+def test_fragment_save_idempotency_key_survives_retries_and_deletion(extraction_api):
+    client, factory = extraction_api
+    headers = {**OWNER, "Idempotency-Key": str(uuid4())}
+    payload = {"source_type": "text", "content_text": "我在上海读书。"}
+    first = client.post(FRAGMENTS, headers=headers, json=payload)
+    second = client.post(FRAGMENTS, headers=headers, json=payload)
+    assert first.status_code == second.status_code == 201
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["extraction_job"] == second.json()["extraction_job"]
+    assert client.post(FRAGMENTS, headers=headers, json={**payload, "content_text": "另一条记忆"}).status_code == 409
+    with factory() as db:
+        assert len(db.scalars(select(MemoryFragment)).all()) == 1
+        assert len(db.scalars(select(AIProcessingJob)).all()) == 1
+        assert len(db.scalars(select(MemoryElement)).all()) == 1
+
+    fragment_url = f"{FRAGMENTS}/{first.json()['id']}"
+    assert client.delete(fragment_url, headers=OWNER).status_code == 200
+    assert client.post(FRAGMENTS, headers=headers, json=payload).status_code == 409
+    assert client.post(FRAGMENTS.replace("/11/", "/12/"), headers=headers, json=payload).status_code == 201
+
+
+def test_late_raw_transcript_starts_extraction_once_and_preserves_evidence(extraction_api):
+    client, factory = extraction_api
+    now = datetime.now(timezone.utc)
+    with factory.begin() as db:
+        db.add(MediaAsset(
+            id=25, uploaded_by_user_id=1, purpose="recording", media_type="audio", storage_provider="mock",
+            storage_region="local", bucket_name="test", object_key="audio.wav", content_type="audio/wav",
+            expected_size_bytes=1, size_bytes=1, content_sha256="a" * 64,
+            upload_status="uploaded", uploaded_at=now, upload_expires_at=now,
+        ))
+    created = client.post(FRAGMENTS, headers=OWNER, json={"audio_asset_id": 25})
+    assert created.status_code == 201 and created.json()["extraction_skip_reason"] == "SOURCE_TEXT_REQUIRED"
+    url = f"{FRAGMENTS}/{created.json()['id']}"
+    assert client.patch(url, headers=OWNER, json={"transcript_edited": "校订稿"}).status_code == 200
+    raw_url = f"{url}/transcript-raw"
+    payload = {"transcript_raw": "  我的录音原文。\n"}
+    assert client.put(raw_url, headers=VIEWER, json=payload).status_code == 403
+    updated = client.put(raw_url, headers=OWNER, json=payload)
+    assert updated.status_code == 200, updated.text
+    result = updated.json()
+    assert result["transcript_edited"] == "校订稿" and result["transcript_raw"] == payload["transcript_raw"]
+    assert result["extraction_job"]["status"] == "succeeded"
+    repeat = client.put(raw_url, headers=OWNER, json=payload)
+    assert repeat.json()["extraction_job"] == result["extraction_job"]
+    assert client.put(raw_url, headers=OWNER, json={"transcript_raw": "不同原文"}).status_code == 409
+    element, = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    proof = client.get(f"{ELEMENTS}/{element['id']}/provenance", headers=OWNER).json()
+    assert (proof["source_kind"], proof["source_quote"], proof["start_offset"]) == ("transcript_raw", "我的录音原文。", 2)
+
+
+def test_session_latest_recorded_at_tracks_live_fragments_after_backfill_and_delete(extraction_api):
+    client, _ = extraction_api
+    latest = save_text(client, "最新一段", recorded_at="2020-02-02T10:00:00Z")
+    older = save_text(client, "补录旧内容", recorded_at="2020-01-01T10:00:00Z")
+
+    def summary():
+        reply = client.get(SESSION, headers=OWNER).json()
+        return reply["last_recorded_at"], reply["transcript_excerpt"]
+
+    recorded_at, excerpt = summary()
+    assert recorded_at.startswith("2020-02-02") and excerpt == "最新一段"
+    assert client.delete(f"{FRAGMENTS}/{latest['id']}", headers=OWNER).status_code == 200
+    recorded_at, excerpt = summary()
+    assert recorded_at.startswith("2020-01-01") and excerpt == "补录旧内容"
+    assert client.delete(f"{FRAGMENTS}/{older['id']}", headers=OWNER).status_code == 200
+    assert summary() == (None, None)
 
 
 def test_retry_budget_fallback_and_manual_replacement(extraction_api, monkeypatch):

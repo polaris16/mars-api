@@ -59,7 +59,7 @@ def reject_relationship(
     return service.reject(session, current_user, relationship_id)
 
 
-@router.post("/{relationship_id}/revoke", response_model=list[RelationshipRecordResponse], summary="撤销用户关系")
+@router.post("/{relationship_id}/revoke", response_model=list[RelationshipRecordResponse], summary="撤回待确认邀请或撤销有效关系")
 def revoke_relationship(
     relationship_id: int,
     current_user: CurrentUser,

@@ -57,6 +57,45 @@ def test_expired_relationship_is_listed_as_expired_and_can_be_reinvited(
     assert client.post(url, headers=alice, json=payload).status_code == 201
 
 
+def test_invitation_expiry_is_independent_from_confirmed_relationship(client, monkeypatch):
+    class Clock(datetime):
+        current = datetime(2026, 11, 19, 12, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr(user_relationship_service, "datetime", Clock)
+    alice = login(client, "13800000001")
+    bob = login(client, "13800000002")
+    payload = {"related_user_id": 2, "relationship_type": "family", "relation_code": "sibling_of"}
+    invite = client.post(RELATIONSHIPS, headers=alice, json=payload).json()
+    assert invite["valid_until"] is None
+    assert invite["invitation_expires_at"].startswith("2026-11-26")
+    Clock.current += timedelta(days=7)
+    assert client.post(f"{RELATIONSHIPS}/{invite['id']}/accept", headers=bob).status_code == 409
+    assert client.get(RELATIONSHIPS, headers=alice).json()["items"][0]["status"] == "expired"
+
+    second = client.post(RELATIONSHIPS, headers=alice, json=payload)
+    assert second.status_code == 201
+    assert client.post(f"{RELATIONSHIPS}/{second.json()['id']}/accept", headers=bob).status_code == 200
+    Clock.current += timedelta(days=30)
+    assert client.get(RELATIONSHIPS, headers=alice).json()["items"][0]["status"] == "active"
+
+
+def test_only_initiator_can_withdraw_pending_invitation_and_send_correction(client):
+    alice = login(client, "13800000001")
+    bob = login(client, "13800000002")
+    payload = {"related_user_id": 2, "relationship_type": "family", "relation_code": "sibling_of"}
+    invite = client.post(RELATIONSHIPS, headers=alice, json=payload).json()
+    revoke_url = f"{RELATIONSHIPS}/{invite['id']}/revoke"
+    assert client.post(revoke_url, headers=bob).status_code == 403
+    revoked = client.post(revoke_url, headers=alice)
+    assert revoked.status_code == 200 and revoked.json()[0]["status"] == "revoked"
+    assert client.post(f"{RELATIONSHIPS}/{invite['id']}/accept", headers=bob).status_code == 409
+    assert client.post(RELATIONSHIPS, headers=alice, json={**payload, "relation_code": "parent_of"}).status_code == 201
+
+
 @pytest.fixture
 def client(monkeypatch) -> Generator[TestClient, None, None]:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -94,7 +133,7 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
                 relationship_label VARCHAR(100), status VARCHAR(20) NOT NULL,
                 authorization_method VARCHAR(30) NOT NULL, authorization_reference VARCHAR(255),
                 initiated_by_user_id BIGINT NOT NULL, verified_by_user_id BIGINT,
-                valid_from TIMESTAMP, valid_until TIMESTAMP, accepted_at TIMESTAMP,
+                valid_from TIMESTAMP, valid_until TIMESTAMP, invitation_expires_at TIMESTAMP, accepted_at TIMESTAMP,
                 revoked_at TIMESTAMP, revocation_reason VARCHAR(255), created_by BIGINT,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by BIGINT,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, is_del BOOLEAN NOT NULL DEFAULT 0,

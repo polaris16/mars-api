@@ -2,6 +2,8 @@
 
 分层 FastAPI Web 工程，使用 SQLAlchemy 2.x 和 psycopg 3 同步访问 PostgreSQL，并使用 Alembic 管理表结构迁移。数据库访问配置位于 `app/db/`，业务逻辑和数据库操作由 `app/services/` 负责；Redis 目前仅预留目录，未添加依赖或访问实现。
 
+当前业务、接口和模型见 [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)，工程开发约定与注释规范分别见 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) 和 [COMMENT_GUIDELINES.md](COMMENT_GUIDELINES.md)。下文目录图展示初始工程的核心结构。
+
 ## 目录结构
 
 ```text
@@ -143,7 +145,12 @@ uv run alembic history
 uv run alembic upgrade head --sql
 ```
 
-工程已配置迁移环境，无需再次执行 `alembic init`。当前没有针对既有 `t_user` 表的基线迁移；接管已有数据库时，应先规划基线版本，并检查自动生成的迁移脚本，避免对现有表重复执行建表迁移。
+全新的空 PostgreSQL 库先通过 `psql` 应用仓库内的 `migrations/bootstrap_t_user.sql`，再执行 `uv run alembic upgrade head`。SQL 保留第一条迁移依赖的初始表结构，后续的头像、注册和其他功能继续由迁移升级。已有 `t_user` 的数据库按现有接管流程核对版本和结构。
+
+```text
+psql -h <host> -p <port> -U <user> -d <database> -v ON_ERROR_STOP=1 -f migrations/bootstrap_t_user.sql
+uv run alembic upgrade head
+```
 
 ## 验证
 

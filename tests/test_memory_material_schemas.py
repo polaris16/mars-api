@@ -8,8 +8,21 @@ import json
 
 from app.core.config import get_settings
 from app.models import FragmentAttachment, MediaAsset, MemoryFragment
-from app.schemas.memory import FragmentCreate, SessionSummary, UploadAuthorizationRequest
+from app.schemas.memory import AttachmentInput, AttachmentPatch, FragmentCreate, SessionSummary, UploadAuthorizationRequest, UploadCompleteRequest
 from app.services.object_storage_service import ObjectStorageService
+
+
+@pytest.mark.parametrize(("schema", "field", "maximum"), [
+    (UploadCompleteRequest, "duration_ms", (1 << 63) - 1),
+    (UploadCompleteRequest, "sample_rate_hz", (1 << 31) - 1),
+    (AttachmentInput, "sort_order", (1 << 31) - 1),
+    (AttachmentPatch, "sort_order", (1 << 31) - 1),
+])
+def test_media_metadata_fits_postgresql_integer_range(schema, field, maximum):
+    payload = {"asset_id": 1} if schema is AttachmentInput else {}
+    assert getattr(schema.model_validate({**payload, field: maximum}), field) == maximum
+    with pytest.raises(ValidationError):
+        schema.model_validate({**payload, field: maximum + 1})
 
 
 def test_session_summary_maps_persisted_last_material_at_to_api_field():

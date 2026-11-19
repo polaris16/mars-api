@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
+from hashlib import sha256
 import hmac
+import json
 import uuid
 
 from fastapi import HTTPException
@@ -17,6 +19,7 @@ from app.schemas.memory import (
     AttachmentPatch,
     FragmentCreate,
     FragmentPatch,
+    FragmentRawTranscriptUpdate,
     MediaAssetResponse,
     SessionCreate,
     SessionPatch,
@@ -213,6 +216,21 @@ class MemoryService:
         for asset in assets:
             self._refresh_asset_status(session, asset)
 
+    @staticmethod
+    def _latest_recorded_at(session: Session, session_id: int) -> datetime | None:
+        return session.scalar(select(func.max(MemoryFragment.recorded_at)).where(
+            MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False),
+        ))
+
+    @staticmethod
+    def _latest_excerpt(session: Session, session_id: int) -> str | None:
+        excerpt = session.scalar(select(func.coalesce(
+            MemoryFragment.transcript_edited, MemoryFragment.transcript_raw, MemoryFragment.content_text,
+        )).where(
+            MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False),
+        ).order_by(MemoryFragment.recorded_at.desc(), MemoryFragment.sequence_no.desc()).limit(1))
+        return excerpt[:160] if excerpt else None
+
     def create_session(self, session: Session, user: User, body: SessionCreate) -> MemorySession:
         if body.topic_id is not None and session.scalar(select(Topic.id).where(
             Topic.id == body.topic_id, Topic.is_enabled.is_(True), Topic.is_del.is_(False)
@@ -257,8 +275,9 @@ class MemoryService:
             attachment_count = session.scalar(select(func.count(FragmentAttachment.id)).join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False), FragmentAttachment.is_del.is_(False))) or 0
             duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.source_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
             topic_title = session.scalar(select(Topic.title).where(Topic.id == row.topic_id)) if row.topic_id else None
-            excerpt = session.scalar(select(func.coalesce(MemoryFragment.transcript_edited, MemoryFragment.transcript_raw, MemoryFragment.content_text)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no.desc()).limit(1))
-            items.append({"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": fragment_count, "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None})
+            # [修改] 摘要使用录制时间，与会话的最近素材时间保持一致。
+            excerpt = self._latest_excerpt(session, row.id)
+            items.append({"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": fragment_count, "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt})
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
     def patch_session(self, session: Session, user: User, session_id: int, body: SessionPatch) -> MemorySession:
@@ -435,7 +454,7 @@ class MemoryService:
 
     def create_fragment(
         self, session: Session, user: User, session_id: int, body: FragmentCreate,
-        *, after_flush: Callable[[MemoryFragment], None] | None = None,
+        *, after_flush: Callable[[MemoryFragment], None] | None = None, request_key: uuid.UUID | None = None,
     ) -> MemoryFragment:
         # [删除-旧] 原实现只接受 audio_asset_id，片段固定引用音频并禁止素材复用；保留旧实现便于追溯。
         # self._session(session, user.id, session_id)
@@ -461,9 +480,24 @@ class MemoryService:
         # [新增] 统一处理文本、音频、视频片段，并在每条素材记录上保存提供者。
         # [COMPAT] Keep audio_asset_id accepted as a source_asset_id alias.
         source_asset_id = body.source_asset_id or body.audio_asset_id
+        request_hash = None
+        if request_key is not None:
+            payload = body.model_dump(mode="json", exclude={"audio_asset_id"})
+            payload["source_asset_id"] = source_asset_id
+            request_hash = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
         with session.begin():
             row, role = self._session_access(session, user.id, session_id, lock=True)
             contributor = self._require_contribution(session, row, user, role)
+            # [新增] 持有会话锁时查找请求键，同一次保存只允许首次请求落库。
+            if request_key is not None:
+                existing = session.scalar(select(MemoryFragment).where(
+                    MemoryFragment.session_id == row.id, MemoryFragment.created_by == user.id,
+                    MemoryFragment.client_request_key == request_key,
+                ))
+                if existing is not None:
+                    if existing.is_del or existing.client_request_hash != request_hash:
+                        raise HTTPException(status_code=409, detail="该幂等键已被其他内容或已删除片段使用")
+                    return existing
             asset = self._asset(session, user.id, source_asset_id, lock=True) if source_asset_id is not None else None
             if body.source_type == "audio" and (asset is None or asset.purpose != "recording" or asset.media_type != "audio"):
                 raise HTTPException(status_code=422, detail="audio fragment requires a recording asset")
@@ -484,17 +518,21 @@ class MemoryService:
                 source_asset_id=asset.id if asset else None,
                 content_text=body.content_text,
                 transcript_raw=body.transcript_raw,
+                client_request_key=request_key,
+                client_request_hash=request_hash,
                 recorded_at=body.recorded_at or datetime.now(timezone.utc),
                 created_by=user.id,
                 updated_by=user.id,
             )
             session.add(fragment)
-            row.last_material_at = fragment.recorded_at
+            # [删除-旧] row.last_material_at = fragment.recorded_at
             row.updated_by = user.id
             if asset is not None:
                 asset.upload_status = "attached"
                 asset.updated_by = user.id
             session.flush()
+            # [修改] 补录旧片段可能晚于最近片段到达，取现存片段的最大业务时间。
+            row.last_material_at = self._latest_recorded_at(session, row.id)
             if row.topic_id is not None:
                 TopicService.record_participation(session, row.topic_id, user.id)
             if after_flush is not None:
@@ -540,6 +578,32 @@ class MemoryService:
             fragment.updated_by = user.id
         return fragment
 
+    # [新增] 允许原素材提供者补交晚到的 ASR，同时保护已引用的原文。
+    def save_fragment_raw_transcript(
+        self, session: Session, user: User, session_id: int, fragment_id: int,
+        body: FragmentRawTranscriptUpdate, *, after_flush: Callable[[MemoryFragment], None],
+    ) -> MemoryFragment:
+        with session.begin():
+            fragment, memory, role = self._fragment_access(
+                session, user.id, fragment_id, lock=True, expected_session_id=session_id,
+            )
+            self._require_contribution(session, memory, user, role)
+            author = session.get(MemoryContributor, fragment.contributor_id)
+            if author is None or author.is_del or author.session_id != memory.id or author.account_user_id != user.id:
+                raise HTTPException(status_code=403, detail="只有原素材提供者可以补交原始转写")
+            if fragment.source_type not in {"audio", "video"}:
+                raise HTTPException(status_code=422, detail="只支持为音频或视频片段补交原始转写")
+            existing = fragment.transcript_raw
+            if existing and existing.strip() and existing != body.transcript_raw:
+                raise HTTPException(status_code=409, detail="已有原始转写，修改请使用校订文本")
+            if existing != body.transcript_raw:
+                fragment.transcript_raw = body.transcript_raw
+                fragment.updated_by = user.id
+                fragment.updated_at = datetime.now(timezone.utc)
+                session.flush()
+            after_flush(fragment)
+        return fragment
+
     def delete_fragment(self, session: Session, user: User, session_id: int, fragment_id: int) -> None:
         with session.begin():
             fragment, memory, role = self._fragment_access(
@@ -561,6 +625,11 @@ class MemoryService:
             if fragment.source_asset_id is not None:
                 affected_asset_ids.add(fragment.source_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
+            # [新增] 直接文字没有文件引用，仍需刷出软删除再重算会话时间。
+            session.flush()
+            memory.last_material_at = self._latest_recorded_at(session, memory.id)
+            memory.updated_by = user.id
+            memory.updated_at = now
 
     def create_attachments(self, session: Session, user: User, fragment_id: int, body: AttachmentBatchCreate, storage: ObjectStorageService | None = None) -> list[dict]:
         with session.begin():
@@ -665,5 +734,5 @@ class MemoryService:
         attachment_count = session.scalar(select(func.count(FragmentAttachment.id)).join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False), FragmentAttachment.is_del.is_(False))) or 0
         duration_ms = session.scalar(select(func.coalesce(func.sum(MediaAsset.duration_ms), 0)).join(MemoryFragment, MemoryFragment.source_asset_id == MediaAsset.id).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False))) or 0
         topic_title = session.scalar(select(Topic.title).where(Topic.id == row.topic_id)) if row.topic_id else None
-        excerpt = session.scalar(select(func.coalesce(MemoryFragment.transcript_edited, MemoryFragment.transcript_raw, MemoryFragment.content_text)).where(MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)).order_by(MemoryFragment.sequence_no.desc()).limit(1))
-        return {"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": len(fragments), "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt[:160] if excerpt else None, "fragments": [self._fragment_response(session, f, storage) for f in fragments]}
+        excerpt = self._latest_excerpt(session, row.id)
+        return {"id": row.id, "topic_id": row.topic_id, "topic_title": topic_title, "title": row.title, "is_favorite": row.is_favorite, "last_recorded_at": row.last_material_at, "created_at": row.created_at, "fragment_count": len(fragments), "attachment_count": attachment_count, "duration_ms": duration_ms, "transcript_excerpt": excerpt, "fragments": [self._fragment_response(session, f, storage) for f in fragments]}

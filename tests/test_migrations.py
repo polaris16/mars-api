@@ -6,6 +6,7 @@ from shutil import copyfile
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import Column, Integer, MetaData, Table, create_engine, inspect
 
 from app.models import Base
@@ -52,3 +53,31 @@ def test_autogenerate_upgrade_downgrade_and_offline_sql(tmp_path, monkeypatch):
         assert "SERIAL" in output.getvalue()
     finally:
         engine.dispose()
+
+
+def test_reliability_and_schema_comments_generate_offline_postgresql_sql():
+    project_root = Path(__file__).resolve().parents[1]
+    output = StringIO()
+    config = Config(str(project_root / "alembic.ini"), output_buffer=output)
+    comments = ScriptDirectory.from_config(config).get_revision("20261119_12").module
+    for table_name, (_, current) in comments.TABLE_COMMENTS.items():
+        assert Base.metadata.tables[table_name].comment == current
+    for table_name, columns in comments.COLUMN_COMMENTS.items():
+        for field, _, current in columns:
+            assert Base.metadata.tables[table_name].c[field].comment == current
+
+    command.upgrade(config, "20261119_10:20261119_12", sql=True)
+    sql = output.getvalue()
+    assert "ADD COLUMN client_request_key UUID" in sql
+    assert "UNIQUE (session_id, created_by, client_request_key)" in sql
+    assert "invitation_expires_at = LEAST" in sql
+    assert "last_material_at IS DISTINCT FROM latest.recorded_at" in sql
+    assert "COMMENT ON TABLE t_auth_session IS '用户登录认证会话'" in sql
+    assert "COMMENT ON COLUMN t_memory_element.summary" in sql
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261119_12:20261119_10", sql=True)
+    sql = output.getvalue()
+    assert "COMMENT ON TABLE t_auth_session IS NULL" in sql
+    assert "DROP COLUMN invitation_expires_at" in sql

@@ -67,6 +67,7 @@ def _bounded_io(call: Callable, deadline: float, timeout_code: str):
     except RuntimeError:
         _io_slots.release()
         raise ExtractionError("EXTRACTION_BUSY", retryable=True) from None
+    # 请求可能先超时返回。模型调用实际结束后才回收并发名额。
     future.add_done_callback(lambda _: _io_slots.release())
     try:
         return future.result(timeout=max(0, deadline - monotonic()))
@@ -205,6 +206,7 @@ class MemoryExtractionService:
         model_scope = self._model_scope()
         authorized_author = None
         if self.model.external:
+            # 同一原文交给同一模型配置时才可沿用作者的授权。
             already_authorized = (
                 previous is not None and previous.input_payload.get("authorized_source_user_id") == author_id
                 and previous.input_payload.get("model_scope") == model_scope

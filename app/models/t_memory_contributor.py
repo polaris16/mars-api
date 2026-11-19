@@ -27,19 +27,19 @@ class MemoryContributor(Base):
         {"comment": "记忆会话中的素材提供者身份"},
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True, comment='Primary key identifier')  # [UPDATED] Added column comment.
-    session_id = Column(BigInteger, ForeignKey("t_memory_session.id", ondelete="CASCADE", name="fk_t_memory_contributor_session"), nullable=False, comment='Memory session ID')  # [UPDATED] Added column comment.
-    contributor_type = Column(String(24), nullable=False, comment='Provider category: owner, registered user, or guest')  # [UPDATED] Added column comment.
-    account_user_id = Column(BigInteger, ForeignKey("t_user.id", ondelete="RESTRICT", name="fk_t_memory_contributor_user"), comment='Registered account representing this contributor')  # [UPDATED] Added column comment.
-    session_member_id = Column(BigInteger, comment='Session membership authorizing this contributor')  # [UPDATED] Added column comment.
-    relationship_id = Column(BigInteger, ForeignKey("t_user_relationship.id", ondelete="SET NULL", name="fk_t_memory_contributor_relationship"), comment='Relationship associated with this contributor')  # [UPDATED] Added column comment.
-    display_name = Column(String(100), nullable=False, comment='Name displayed for the material contributor')  # [UPDATED] Added column comment.
-    relationship_label = Column(String(100), comment='Free-form relationship label')  # [UPDATED] Added column comment.
-    identity_status = Column(String(20), nullable=False, server_default=text("'unverified'"), comment='Whether this contributor identity has been verified')  # [UPDATED] Added column comment.
-    consent_status = Column(String(20), nullable=False, server_default=text("'pending'"), comment='Contributor consent lifecycle status')  # [UPDATED] Added column comment.
-    consented_at = Column(DateTime(timezone=True), comment='Timestamp when the contributor consented')  # [UPDATED] Added column comment.
-    created_by = Column(BigInteger, comment='User ID that created this row')  # [UPDATED] Added column comment.
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment='Timestamp when this row was created')  # [UPDATED] Added column comment.
-    updated_by = Column(BigInteger, comment='User ID that last updated this row')  # [UPDATED] Added column comment.
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment='Timestamp when this row was last updated')  # [UPDATED] Added column comment.
-    is_del = Column(Boolean, nullable=False, server_default=text("false"), comment='Soft-delete flag')  # [UPDATED] Added column comment.
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键 ID")  # [UPDATED] Added column comment.
+    session_id = Column(BigInteger, ForeignKey("t_memory_session.id", ondelete="CASCADE", name="fk_t_memory_contributor_session"), nullable=False, comment="所属记忆会话 ID")  # [UPDATED] Added column comment.
+    contributor_type = Column(String(24), nullable=False, comment="提供者类型：owner 会话主人、registered_user 注册用户、guest 访客")  # [UPDATED] Added column comment.
+    account_user_id = Column(BigInteger, ForeignKey("t_user.id", ondelete="RESTRICT", name="fk_t_memory_contributor_user"), comment="素材提供者对应的注册用户 ID，访客为空")  # [UPDATED] Added column comment.
+    session_member_id = Column(BigInteger, comment="赋予贡献资格的会话成员授权 ID")  # [UPDATED] Added column comment.
+    relationship_id = Column(BigInteger, ForeignKey("t_user_relationship.id", ondelete="SET NULL", name="fk_t_memory_contributor_relationship"), comment="提供者资格关联的亲属关系 ID")  # [UPDATED] Added column comment.
+    display_name = Column(String(100), nullable=False, comment="素材提供者的会话内显示名")  # [UPDATED] Added column comment.
+    relationship_label = Column(String(100), comment="提供者的自定义关系称谓")  # [UPDATED] Added column comment.
+    identity_status = Column(String(20), nullable=False, server_default=text("'unverified'"), comment="身份核验状态：unverified 未核验、verified 已核验")  # [UPDATED] Added column comment.
+    consent_status = Column(String(20), nullable=False, server_default=text("'pending'"), comment="提供者同意状态：pending 待同意、accepted 已同意、withdrawn 已撤回")  # [UPDATED] Added column comment.
+    consented_at = Column(DateTime(timezone=True), comment="最近一次同意提供素材的时间")  # [UPDATED] Added column comment.
+    created_by = Column(BigInteger, comment="创建人 ID")  # [UPDATED] Added column comment.
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间")  # [UPDATED] Added column comment.
+    updated_by = Column(BigInteger, comment="更新人 ID")  # [UPDATED] Added column comment.
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="更新时间")  # [UPDATED] Added column comment.
+    is_del = Column(Boolean, nullable=False, server_default=text("false"), comment="是否软删除")  # [UPDATED] Added column comment.

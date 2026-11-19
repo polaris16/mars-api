@@ -33,7 +33,7 @@ class MemorySession(Base):
     )
     title = Column(String(100), nullable=False, server_default=text("'未命名'"), comment="会话标题")
     is_favorite = Column(Boolean, nullable=False, server_default=text("false"), comment="是否收藏")
-    last_material_at = Column(DateTime(timezone=True), nullable=True, comment="最近新增素材时间")
+    last_material_at = Column(DateTime(timezone=True), nullable=True, comment="未删除片段中最晚的记录时间，无片段时为空")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间")
     updated_by = Column(BigInteger, nullable=True, comment="更新人ID")

@@ -89,7 +89,9 @@ class ObjectStorageService:
             "X-Amz-SignedHeaders": signed_headers,
         }
         canonical_query = urlencode(sorted(params.items()), quote_via=quote, safe="-_.~")
-        canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers)).rstrip("\n")
+        # [删除-旧] canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers)).rstrip("\n")
+        # [修改] SigV4 要求规范请求头块以换行结尾，后续字段另起一行。
+        canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers))
         canonical_request = "\n".join((method, canonical_uri, canonical_query, canonical_headers, signed_headers, "UNSIGNED-PAYLOAD"))
         string_to_sign = "\n".join(("AWS4-HMAC-SHA256", amz_date, credential_scope, hashlib.sha256(canonical_request.encode()).hexdigest()))
         signature = hmac.new(self._signing_key(self.settings.object_storage_secret_access_key.get_secret_value(), date, self.settings.object_storage_region), string_to_sign.encode(), hashlib.sha256).hexdigest()

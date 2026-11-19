@@ -13,6 +13,7 @@ ORIGIN = "http://localhost:5173"
 @pytest.mark.parametrize(("method", "path", "request_headers"), [
     ("GET", "/api/media-assets/1", "authorization"),
     ("POST", "/api/media-assets/upload-authorizations", "authorization, content-type"),
+    ("POST", "/api/recording-sessions/1/fragments", "authorization, content-type, idempotency-key"),
     ("PUT", "/api/mock-storage/upload/token", "content-type, if-none-match"),
     ("PATCH", "/api/recording-sessions/1", "authorization, content-type"),
     ("DELETE", "/api/media-assets/1", "authorization"),

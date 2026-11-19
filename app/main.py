@@ -44,7 +44,7 @@ def create_app() -> FastAPI:
             allow_credentials=False,
             # Web clients also call the authenticated JSON API before and after direct uploads.
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "If-None-Match", "Range"],
+            allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "If-None-Match", "Range"],
             expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
         )
     application.include_router(api_router, prefix="/api")

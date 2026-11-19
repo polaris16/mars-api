@@ -36,6 +36,7 @@ class RelationshipRecordResponse(BaseModel):
     status: str
     initiated_by_user_id: int
     accepted_at: datetime | None
+    invitation_expires_at: datetime | None
     valid_from: datetime | None
     valid_until: datetime | None
     revoked_at: datetime | None

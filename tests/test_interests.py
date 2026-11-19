@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -118,6 +119,25 @@ def test_save_interests_replaces_selection_and_restores_soft_deleted_rows(
     assert first.status_code == replacement.status_code == restored.status_code == 200
     assert replacement.json()["interest_ids"] == [1]
     assert restored.json()["interest_ids"] == [2, 1]
+
+
+def test_interest_replacement_locks_user_before_reading_old_selection(client, auth_headers):
+    operations = []
+
+    def record_statement(state):
+        if state.is_select:
+            names = {getattr(source, "name", None) for source in state.statement.get_final_froms()}
+            sql = str(state.statement.compile(dialect=postgresql.dialect()))
+            operations.append((names, "FOR UPDATE" in sql))
+
+    event.listen(Session, "do_orm_execute", record_statement)
+    try:
+        result = client.put("/api/users/me/interests", headers=auth_headers, json={"interest_ids": [1]})
+    finally:
+        event.remove(Session, "do_orm_execute", record_statement)
+    assert result.status_code == 200, result.text
+    assert ({"t_user"}, True) in operations
+    assert operations.index(({"t_user"}, True)) < operations.index(({"t_user_interest"}, False))
 
 
 def test_saving_interests_completes_onboarding_when_profile_is_complete(

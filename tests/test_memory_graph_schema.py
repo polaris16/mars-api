@@ -1,5 +1,7 @@
 """Metadata checks for the AI memory graph schema."""
 
+import re
+
 from app.models import Base
 
 
@@ -21,6 +23,16 @@ def test_memory_graph_tables_are_registered_with_audit_fields():
         table = Base.metadata.tables[table_name]
         assert audit_fields <= set(table.columns.keys())
         assert table.comment
+
+
+def test_business_tables_and_columns_have_chinese_comments():
+    chinese = re.compile(r"[\u3400-\u9fff]")
+    missing = []
+    for table in Base.metadata.sorted_tables:
+        if not chinese.search(table.comment or ""):
+            missing.append(table.name)
+        missing.extend(f"{table.name}.{column.name}" for column in table.columns if not chinese.search(column.comment or ""))
+    assert not missing, missing
 
 
 def test_memory_graph_foreign_keys_and_partial_unique_indexes():

@@ -1,6 +1,6 @@
 """Relationship invitation lifecycle and reciprocal family records."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
 from collections import defaultdict
 
@@ -25,6 +25,7 @@ ALLOWED_CODES = {
     "caregiver": {"caregiver_for"},
     "other": {"other"},
 }
+INVITATION_TTL = timedelta(days=7)
 
 
 class UserRelationshipService:
@@ -38,6 +39,10 @@ class UserRelationshipService:
 
     @classmethod
     def _effective_status(cls, row: UserRelationship, now: datetime) -> str:
+        # [新增] 邀请等待时间与关系有效期分开，确认后只使用关系有效期。
+        if row.status == "pending" and row.invitation_expires_at is not None:
+            if cls._utc(row.invitation_expires_at) <= now:
+                return "expired"
         if row.status in {"pending", "active"} and row.valid_until is not None:
             if cls._utc(row.valid_until) <= now:
                 return "expired"
@@ -143,6 +148,8 @@ class UserRelationshipService:
                 UserRelationship.relationship_type == body.relationship_type,
                 UserRelationship.status.in_(["pending", "active"]),
                 or_(UserRelationship.valid_until.is_(None), UserRelationship.valid_until > now),
+                or_(UserRelationship.status != "pending", UserRelationship.invitation_expires_at.is_(None),
+                    UserRelationship.invitation_expires_at > now),
                 UserRelationship.is_del.is_(False),
             )).all()
             if body.relationship_type == "family":
@@ -167,6 +174,7 @@ class UserRelationshipService:
                 authorization_method="in_app",
                 initiated_by_user_id=user_id,
                 valid_until=expiry,
+                invitation_expires_at=min(now + INVITATION_TTL, expiry) if expiry is not None else now + INVITATION_TTL,
                 created_by=user_id,
                 updated_by=user_id,
             )
@@ -253,6 +261,11 @@ class UserRelationshipService:
             ))
             if pair_id is None:
                 raise self._not_found()
+            # [修改] 与接受邀请共用原邀请行的锁，再用新查询读出可能刚写入的反向关系。
+            session.scalar(select(UserRelationship.id).where(
+                UserRelationship.relationship_pair_id == pair_id,
+                UserRelationship.is_del.is_(False),
+            ).order_by(UserRelationship.id).limit(1).with_for_update())
             # Acquire the group locks in the same order, regardless of which row was requested.
             pair = list(session.scalars(select(UserRelationship).where(
                 UserRelationship.relationship_pair_id == pair_id,
@@ -262,11 +275,19 @@ class UserRelationshipService:
             if row is None or user_id not in (row.subject_user_id, row.related_user_id):
                 raise self._not_found()
             now = datetime.now(timezone.utc)
-            if self._effective_status(row, now) != "active":
-                raise HTTPException(status_code=409, detail="只有有效关系可以撤销")
-            if len(pair) > 1 and not self.is_confirmed_family_pair(pair, now):
-                raise HTTPException(status_code=409, detail="关系组记录不一致")
-            pair = [member for member in pair if member.status == "active"]
+            current_status = self._effective_status(row, now)
+            if current_status == "pending":
+                # [新增] 发起方可撤回邀请，接收方仍通过拒绝接口处理。
+                if row.initiated_by_user_id != user_id:
+                    raise HTTPException(status_code=403, detail="只有发起人可以撤回邀请")
+                if len(pair) != 1:
+                    raise HTTPException(status_code=409, detail="邀请组记录不一致")
+            elif current_status == "active":
+                if len(pair) > 1 and not self.is_confirmed_family_pair(pair, now):
+                    raise HTTPException(status_code=409, detail="关系组记录不一致")
+                pair = [member for member in pair if member.status == "active"]
+            else:
+                raise HTTPException(status_code=409, detail="只有待确认邀请或有效关系可以撤销")
             for member in pair:
                 member.status = "revoked"
                 member.revoked_at = now

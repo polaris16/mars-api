@@ -3,9 +3,11 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, field_validator, model_validator
 from app.schemas.memory_extraction import ExtractionJobResponse
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
+PG_INTEGER_MAX = (1 << 31) - 1
+PG_BIGINT_MAX = (1 << 63) - 1
 
 
 class PageResponse(BaseModel):
@@ -87,8 +89,9 @@ class UploadAuthorizationResponse(BaseModel):
 
 
 class UploadCompleteRequest(BaseModel):
-    duration_ms: int | None = Field(default=None, ge=0)
-    sample_rate_hz: int | None = Field(default=None, gt=0)
+    # [修改] 在接口层拒绝超出对应 PostgreSQL 字段范围的数值。
+    duration_ms: int | None = Field(default=None, ge=0, le=PG_BIGINT_MAX)
+    sample_rate_hz: int | None = Field(default=None, gt=0, le=PG_INTEGER_MAX)
 
 
 class MediaAssetResponse(BaseModel):
@@ -140,10 +143,25 @@ class FragmentPatch(BaseModel):
     transcript_edited: str | None
 
 
+class FragmentRawTranscriptUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transcript_raw: str
+    allow_external_processing: StrictBool = False
+
+    @field_validator("transcript_raw")
+    @classmethod
+    def validate_original_text(cls, value: str) -> str:
+        if not value.strip() or "\x00" in value:
+            raise ValueError("原始转写必须有正文且不能含 NUL 字符")
+        # 保留原始空格和换行，抽取引用的位置以提交文本为准。
+        return value
+
+
 class AttachmentInput(BaseModel):
     asset_id: int
     caption: Annotated[str, StringConstraints(max_length=200)] | None = None
-    sort_order: int = Field(default=0, ge=0)
+    sort_order: int = Field(default=0, ge=0, le=PG_INTEGER_MAX)
 
 
 class AttachmentBatchCreate(BaseModel):
@@ -152,7 +170,7 @@ class AttachmentBatchCreate(BaseModel):
 
 class AttachmentPatch(BaseModel):
     caption: Annotated[str, StringConstraints(max_length=200)] | None = None
-    sort_order: int | None = Field(default=None, ge=0)
+    sort_order: int | None = Field(default=None, ge=0, le=PG_INTEGER_MAX)
 
     @model_validator(mode="after")
     def validate_sort_order(self):
