@@ -42,8 +42,9 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=origins,
             allow_credentials=False,
-            allow_methods=["GET", "PUT", "OPTIONS"],
-            allow_headers=["Content-Type", "If-None-Match", "Range"],
+            # Web clients also call the authenticated JSON API before and after direct uploads.
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "If-None-Match", "Range"],
             expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
         )
     application.include_router(api_router, prefix="/api")

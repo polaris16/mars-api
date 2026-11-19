@@ -8,8 +8,7 @@ import json
 
 from app.core.config import get_settings
 from app.models import FragmentAttachment, MediaAsset, MemoryFragment
-from app.schemas.recording import FragmentCreate, SessionSummary, UploadAuthorizationRequest
-from app.services.recording_service import RecordingService
+from app.schemas.memory import FragmentCreate, SessionSummary, UploadAuthorizationRequest
 from app.services.object_storage_service import ObjectStorageService
 
 
@@ -87,14 +86,8 @@ def test_upload_authorization_rejects_text_attachment():
         )
 
 
-def test_text_file_signature_checks_utf8_and_rejects_binary_data():
-    RecordingService._validate_file_signature("text", "一段文字".encode("utf-8"))
-
-    with pytest.raises(Exception):
-        RecordingService._validate_file_signature("text", b"text\x00binary")
-
-
-def test_text_asset_upload_rejects_invalid_utf8_beyond_signature_prefix(tmp_path, monkeypatch):
+@pytest.mark.parametrize("invalid_tail", [b"\xff", b"\x00", b"\xe4\xb8"])
+def test_text_asset_upload_rejects_invalid_data_beyond_signature_prefix(tmp_path, monkeypatch, invalid_tail):
     settings = get_settings()
     monkeypatch.setattr(settings, "object_storage_mode", "mock")
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path))
@@ -102,7 +95,7 @@ def test_text_asset_upload_rejects_invalid_utf8_beyond_signature_prefix(tmp_path
     key = "text/invalid.txt"
     file_path = storage.local_root / key
     file_path.parent.mkdir(parents=True)
-    file_path.write_bytes(b"a" * 64 + b"\xff")
+    file_path.write_bytes(b"a" * 64 + invalid_tail)
     file_path.with_suffix(file_path.suffix + ".meta.json").write_text(
         json.dumps({"content_type": "text/plain"}), encoding="utf-8"
     )

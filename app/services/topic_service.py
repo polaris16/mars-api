@@ -1,14 +1,40 @@
 """[新增] 当前用户的系统话题推荐业务逻辑。"""
 
-from sqlalchemy import case, exists, func, literal, or_, select
+from sqlalchemy import case, exists, func, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import InterestDomain, Topic, TopicInterest, User, UserInterest
+from app.models import InterestDomain, Topic, TopicInterest, TopicParticipant, User, UserInterest
 from app.schemas.topic import TopicCardResponse, TopicRecommendationResponse
 
 
 class TopicService:
     """按兴趣优先、通用话题兜底的顺序提供分页推荐。"""
+
+    @staticmethod
+    def record_participation(session: Session, topic_id: int, user_id: int) -> None:
+        """Record a first contribution within the caller's fragment transaction."""
+        inserted_topic_id = session.scalar(
+            insert(TopicParticipant)
+            .from_select(
+                ["topic_id", "user_id", "created_by", "updated_by"],
+                select(Topic.id, literal(user_id), literal(user_id), literal(user_id)).where(
+                    Topic.id == topic_id, Topic.is_enabled.is_(True), Topic.is_del.is_(False),
+                ),
+            )
+            .on_conflict_do_nothing(index_elements=["topic_id", "user_id"])
+            .returning(TopicParticipant.topic_id)
+        )
+        if inserted_topic_id is not None:
+            session.execute(
+                update(Topic)
+                .where(Topic.id == inserted_topic_id)
+                .values(
+                    participant_count=Topic.participant_count + 1,
+                    updated_by=user_id,
+                    updated_at=func.current_timestamp(),
+                )
+            )
 
     @staticmethod
     def _interest_match(user_id: int):

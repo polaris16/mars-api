@@ -1,4 +1,4 @@
-"""录音会话、片段、OSS 媒体和附件接口模型。"""
+"""记忆会话、片段、OSS 媒体和附件接口模型。"""
 
 from datetime import datetime
 from typing import Annotated, Literal
@@ -180,8 +180,8 @@ class FragmentResponse(BaseModel):
     transcript_raw: str | None
     transcript_edited: str | None
     recorded_at: datetime
-    # [兼容] 旧客户端仍可读取 audio；非音频片段为 null。
-    audio: MediaAssetResponse | None = None
+    # [移除] 旧客户端仍可读取 audio；非音频片段为 null。
+    # audio: MediaAssetResponse | None = None
     attachments: list[AttachmentResponse] = Field(default_factory=list)
 
 

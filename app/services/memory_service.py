@@ -1,4 +1,4 @@
-"""[新增] 录音会话、ASR 片段及 OSS 素材管理业务逻辑。"""
+"""记忆会话、素材片段及 OSS 素材管理业务逻辑。"""
 
 from datetime import datetime, timedelta, timezone
 import hmac
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import FragmentAttachment, MediaAsset, MemoryContributor, MemoryFragment, MemorySession, User, Topic
-from app.schemas.recording import (
+from app.schemas.memory import (
     AttachmentBatchCreate,
     AttachmentPatch,
     FragmentCreate,
@@ -23,11 +23,12 @@ from app.schemas.recording import (
     UploadCompleteRequest,
 )
 from app.services.object_storage_service import ObjectStorageService
+from app.services.topic_service import TopicService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
 
 
-class RecordingService:
+class MemoryService:
     """所有查询限定当前用户，写操作由 Service 显式管理事务。"""
 
     @staticmethod
@@ -45,7 +46,7 @@ class RecordingService:
             query = query.with_for_update()
         row = session.scalar(query)
         if row is None:
-            raise RecordingService._not_found()
+            raise MemoryService._not_found()
         return row
 
     @staticmethod
@@ -90,7 +91,7 @@ class RecordingService:
             query = query.with_for_update()
         row = session.scalar(query)
         if row is None:
-            raise RecordingService._not_found()
+            raise MemoryService._not_found()
         return row
 
     @staticmethod
@@ -104,7 +105,7 @@ class RecordingService:
             query = query.with_for_update()
         row = session.scalar(query)
         if row is None:
-            raise RecordingService._not_found()
+            raise MemoryService._not_found()
         return row
 
     @staticmethod
@@ -125,13 +126,7 @@ class RecordingService:
             or prefix.startswith(b"\x1a\x45\xdf\xa3")
             or (len(prefix) >= 12 and prefix[4:8] == b"ftyp")
         )
-        is_text = bool(prefix) and b"\x00" not in prefix
-        if is_text:
-            try:
-                prefix.decode("utf-8")
-            except UnicodeDecodeError:
-                is_text = False
-        valid = {"image": is_image, "video": is_video, "audio": is_audio, "text": is_text}.get(media_type, False)
+        valid = {"image": is_image, "video": is_video, "audio": is_audio}.get(media_type, False)
         if not valid:
             raise HTTPException(status_code=422, detail="文件内容与声明的媒体类型不符或格式暂不支持")
 
@@ -160,6 +155,20 @@ class RecordingService:
             FragmentAttachment.media_asset_id == asset.id, FragmentAttachment.is_del.is_(False)
         )) or 0
         asset.upload_status = "attached" if fragment_ref + attachment_ref else "uploaded"
+
+    def _refresh_assets_after_unlink(self, session: Session, asset_ids: set[int]) -> None:
+        if not asset_ids:
+            return
+        assets = session.scalars(
+            select(MediaAsset)
+            .where(MediaAsset.id.in_(asset_ids), MediaAsset.is_del.is_(False))
+            .order_by(MediaAsset.id)
+            .with_for_update()
+        ).all()
+        # Autoflush is disabled. Publish the soft deletes before counting remaining links.
+        session.flush()
+        for asset in assets:
+            self._refresh_asset_status(session, asset)
 
     def create_session(self, session: Session, user: User, body: SessionCreate) -> MemorySession:
         if body.topic_id is not None and session.scalar(select(Topic.id).where(
@@ -226,10 +235,7 @@ class RecordingService:
                     attachment.updated_by = user.id
                     attachment.updated_at = now
                     affected_asset_ids.add(attachment.media_asset_id)
-            for asset_id in affected_asset_ids:
-                asset = session.get(MediaAsset, asset_id)
-                if asset:
-                    self._refresh_asset_status(session, asset)
+            self._refresh_assets_after_unlink(session, affected_asset_ids)
 
     def create_upload_authorization(self, session: Session, user: User, body: UploadAuthorizationRequest, storage: ObjectStorageService) -> dict:
         settings = get_settings()
@@ -267,55 +273,74 @@ class RecordingService:
         url = storage.create_upload_url(key, body.content_type, settings.object_storage_upload_ttl_seconds, body.size_bytes)
         return {"reused": False, "asset_id": asset.id, "upload_method": "PUT", "upload_url": url, "required_headers": {"Content-Type": body.content_type, "If-None-Match": "*"}, "expires_at": expires_at}
 
+    @staticmethod
+    def _require_pending_upload(asset: MediaAsset) -> None:
+        expires_at = asset.upload_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if asset.upload_status != "pending_upload" or expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
+
     def complete_upload(self, session: Session, user: User, asset_id: int, body: UploadCompleteRequest, storage: ObjectStorageService) -> MediaAsset:
-        asset = self._asset(session, user.id, asset_id)
+        user_id = user.id
+        asset = self._asset(session, user_id, asset_id)
         if asset.upload_status in {"uploaded", "attached"}:
             return asset
-        if asset.upload_status != "pending_upload" or asset.upload_expires_at <= datetime.now(timezone.utc):
-            raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
+        self._require_pending_upload(asset)
+        purpose, media_type = asset.purpose, asset.media_type
+        object_key, expected_size = asset.object_key, asset.expected_size_bytes
+        expected_sha256, declared_type = asset.expected_sha256, asset.content_type
+        # Release the read transaction while the object is being downloaded and hashed.
+        session.rollback()
         size, content_type, digest, prefix = storage.inspect_and_hash(
-            asset.object_key,
-            asset.expected_size_bytes,
-            validate_utf8=asset.media_type == "text",
+            object_key,
+            expected_size,
+            validate_utf8=media_type == "text",
         )
         actual_type = content_type.split(";")[0].strip().lower()
-        declared_type = asset.content_type.split(";")[0].strip().lower()
-        if size != asset.expected_size_bytes or actual_type != declared_type:
+        if size != expected_size or actual_type != declared_type.split(";")[0].strip().lower():
             raise HTTPException(status_code=422, detail="已上传文件的大小或类型与声明不符")
-        self._validate_file_signature(asset.media_type, prefix)
-        if asset.expected_sha256 and not hmac.compare_digest(digest, asset.expected_sha256.lower()):
+        # Text is validated incrementally over the full stream by the storage adapter.
+        if media_type != "text":
+            self._validate_file_signature(media_type, prefix)
+        if expected_sha256 and not hmac.compare_digest(digest, expected_sha256.lower()):
             raise HTTPException(status_code=422, detail="已上传文件 SHA-256 与声明不符")
-        session.rollback()
         try:
             with session.begin():
-                asset = self._asset(session, user.id, asset_id)
+                # Another request may have confirmed or linked the object during the hash check.
+                asset = self._asset(session, user_id, asset_id, lock=True)
+                if asset.upload_status in {"uploaded", "attached"}:
+                    return asset
+                self._require_pending_upload(asset)
                 asset.size_bytes = size
                 asset.content_sha256 = digest
                 asset.duration_ms = body.duration_ms
                 asset.sample_rate_hz = body.sample_rate_hz
                 asset.upload_status = "uploaded"
                 asset.uploaded_at = datetime.now(timezone.utc)
-                asset.updated_by = user.id
+                asset.updated_by = user_id
         except IntegrityError:
             # 并发上传同一文件时，部分唯一索引可能由另一请求先成功占用。
-            session.rollback()
-            existing = session.scalar(select(MediaAsset).where(
-                MediaAsset.uploaded_by_user_id == user.id,
-                MediaAsset.purpose == asset.purpose,
-                MediaAsset.media_type == asset.media_type,
-                MediaAsset.content_sha256 == digest,
-                MediaAsset.size_bytes == size,
-                MediaAsset.upload_status.in_(["uploaded", "attached"]),
-                MediaAsset.is_del.is_(False),
-            ))
-            if existing is None:
-                raise
-            session.rollback()
             with session.begin():
-                pending = self._asset(session, user.id, asset_id)
+                pending = self._asset(session, user_id, asset_id, lock=True)
+                if pending.upload_status in {"uploaded", "attached"}:
+                    return pending
+                self._require_pending_upload(pending)
+                existing = session.scalar(select(MediaAsset).where(
+                    MediaAsset.id != asset_id,
+                    MediaAsset.uploaded_by_user_id == user_id,
+                    MediaAsset.purpose == purpose,
+                    MediaAsset.media_type == media_type,
+                    MediaAsset.content_sha256 == digest,
+                    MediaAsset.size_bytes == size,
+                    MediaAsset.upload_status.in_(["uploaded", "attached"]),
+                    MediaAsset.is_del.is_(False),
+                ))
+                if existing is None:
+                    raise
                 pending.upload_status = "failed"
                 pending.purge_after = datetime.now(timezone.utc) + timedelta(days=30)
-                pending.updated_by = user.id
+                pending.updated_by = user_id
             return existing
         return asset
 
@@ -379,6 +404,8 @@ class RecordingService:
                 asset.upload_status = "attached"
                 asset.updated_by = user.id
             session.flush()
+            if row.topic_id is not None:
+                TopicService.record_participation(session, row.topic_id, user.id)
         return fragment
 
     def list_fragments(self, session: Session, user: User, session_id: int, page: int, page_size: int, storage: ObjectStorageService | None = None) -> dict:
@@ -390,7 +417,21 @@ class RecordingService:
     def _fragment_response(self, session: Session, fragment: MemoryFragment, storage: ObjectStorageService | None = None) -> dict:
         source_asset = session.get(MediaAsset, fragment.source_asset_id) if fragment.source_asset_id is not None else None
         attachments = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False)).order_by(FragmentAttachment.sort_order, FragmentAttachment.id)).all()
-        return {"id": fragment.id, "session_id": fragment.session_id, "sequence_no": fragment.sequence_no, "contributor_id": fragment.contributor_id, "source_type": fragment.source_type, "source_asset": self._asset_response(source_asset, storage) if source_asset else None, "content_text": fragment.content_text, "transcript_raw": fragment.transcript_raw, "transcript_edited": fragment.transcript_edited, "recorded_at": fragment.recorded_at, "audio": self._asset_response(source_asset, storage) if fragment.source_type == "audio" and source_asset else None, "attachments": [self._attachment_response(session, item, storage) for item in attachments]}
+        return {
+            "id": fragment.id,
+            "session_id": fragment.session_id,
+            "sequence_no": fragment.sequence_no,
+            "contributor_id": fragment.contributor_id,
+            "source_type": fragment.source_type,
+            "source_asset": self._asset_response(source_asset, storage) if source_asset else None,
+            "content_text": fragment.content_text,
+            "transcript_raw": fragment.transcript_raw,
+            "transcript_edited": fragment.transcript_edited,
+            "recorded_at": fragment.recorded_at,
+            # [移除] 旧 audio 响应字段与 source_asset 指向同一素材。
+            # "audio": self._asset_response(source_asset, storage) if fragment.source_type == "audio" and source_asset else None,
+            "attachments": [self._attachment_response(session, item, storage) for item in attachments],
+        }
 
     def get_fragment(self, session: Session, user: User, session_id: int, fragment_id: int, storage: ObjectStorageService) -> dict:
         self._session(session, user.id, session_id)
@@ -420,15 +461,14 @@ class RecordingService:
             fragment.updated_by = user.id
             fragment.updated_at = now
             attachments = session.scalars(select(FragmentAttachment).where(FragmentAttachment.fragment_id == fragment.id, FragmentAttachment.is_del.is_(False))).all()
-            assets = [session.get(MediaAsset, attachment.media_asset_id) for attachment in attachments]
+            affected_asset_ids = {attachment.media_asset_id for attachment in attachments}
             for attachment in attachments:
                 attachment.is_del = True
                 attachment.updated_by = user.id
                 attachment.updated_at = now
-            source_asset = session.get(MediaAsset, fragment.source_asset_id) if fragment.source_asset_id is not None else None
-            for asset in [source_asset, *assets]:
-                if asset:
-                    self._refresh_asset_status(session, asset)
+            if fragment.source_asset_id is not None:
+                affected_asset_ids.add(fragment.source_asset_id)
+            self._refresh_assets_after_unlink(session, affected_asset_ids)
 
     def create_attachments(self, session: Session, user: User, fragment_id: int, body: AttachmentBatchCreate, storage: ObjectStorageService | None = None) -> list[dict]:
         with session.begin():
@@ -499,6 +539,7 @@ class RecordingService:
             link.updated_by = user.id
             link.updated_at = now
             asset = self._asset(session, user.id, link.media_asset_id, lock=True)
+            session.flush()
             self._refresh_asset_status(session, asset)
 
     def list_assets(self, session: Session, user: User, page: int, page_size: int, purpose: str | None, media_type: str | None, storage: ObjectStorageService) -> dict:

@@ -183,6 +183,8 @@ class ObjectStorageService:
         def validate_text_chunk(block: bytes, final: bool = False) -> None:
             if utf8_decoder is None:
                 return
+            if b"\x00" in block:
+                raise HTTPException(status_code=422, detail="文本文件不能包含 NUL 字节")
             try:
                 utf8_decoder.decode(block, final=final)
             except UnicodeDecodeError as exc:
