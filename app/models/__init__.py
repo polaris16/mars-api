@@ -16,6 +16,12 @@ from app.models.t_topic_interest import TopicInterest
 from app.models.t_topic_participant import TopicParticipant
 from app.models.t_user_interest import UserInterest
 from app.models.t_user_relationship import UserRelationship
+from app.models.t_ai_processing_job import AIProcessingJob
+from app.models.t_memory_element import MemoryElement
+from app.models.t_life_entity import LifeEntity
+from app.models.t_life_entity_alias import LifeEntityAlias
+from app.models.t_memory_element_entity import MemoryElementEntity
+from app.models.t_memory_conflict import MemoryConflict
 
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
@@ -36,4 +42,10 @@ __all__ = [
     "MediaAsset",
     "MemoryFragment",
     "FragmentAttachment",
+    "AIProcessingJob",
+    "MemoryElement",
+    "LifeEntity",
+    "LifeEntityAlias",
+    "MemoryElementEntity",
+    "MemoryConflict",
 ]
