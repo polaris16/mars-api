@@ -25,14 +25,20 @@ class MediaAsset(Base):
         UniqueConstraint("object_key", name="t_media_asset_object_key_key"),
         # [删除-旧] purpose 仅允许 recording/attachment；现由下方约束增加 source。
         # [删除-旧] media_type 仅允许 audio/image/video；现由下方约束增加 text。
-        CheckConstraint("purpose IN ('recording', 'source', 'attachment')", name="ck_t_media_asset_purpose"),
-        CheckConstraint("media_type IN ('audio', 'image', 'video', 'text')", name="ck_t_media_asset_media_type"),
+        CheckConstraint(
+            "purpose IN ('recording', 'source', 'attachment')", name="ck_t_media_asset_purpose"
+        ),
+        CheckConstraint(
+            "media_type IN ('audio', 'image', 'video', 'text')", name="ck_t_media_asset_media_type"
+        ),
         CheckConstraint(
             "upload_status IN ('pending_upload', 'uploaded', 'attached', 'failed', 'expired')",
             name="ck_t_media_asset_upload_status",
         ),
         CheckConstraint("expected_size_bytes > 0", name="ck_t_media_asset_expected_size_positive"),
-        CheckConstraint("size_bytes IS NULL OR size_bytes > 0", name="ck_t_media_asset_size_positive"),
+        CheckConstraint(
+            "size_bytes IS NULL OR size_bytes > 0", name="ck_t_media_asset_size_positive"
+        ),
         CheckConstraint(
             "upload_status NOT IN ('uploaded', 'attached') OR "
             "(size_bytes IS NOT NULL AND content_sha256 IS NOT NULL AND uploaded_at IS NOT NULL)",
@@ -88,10 +94,16 @@ class MediaAsset(Base):
     purge_after = Column(DateTime(timezone=True), nullable=True, comment="计划物理清理时间")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")
     created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间"
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
     )
     updated_by = Column(BigInteger, nullable=True, comment="更新人ID")
     updated_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="更新时间"
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="更新时间",
     )
     is_del = Column(Boolean, nullable=False, server_default=text("false"), comment="是否删除")

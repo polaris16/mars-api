@@ -36,20 +36,28 @@ class FragmentAttachment(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="关联ID")
     fragment_id = Column(
         BigInteger,
-        ForeignKey("t_memory_fragment.id", ondelete="CASCADE", name="fk_t_fragment_attachment_fragment"),
+        ForeignKey(
+            "t_memory_fragment.id", ondelete="CASCADE", name="fk_t_fragment_attachment_fragment"
+        ),
         nullable=False,
         comment="语音片段ID",
     )
     media_asset_id = Column(
         BigInteger,
-        ForeignKey("t_media_asset.id", ondelete="CASCADE", name="fk_t_fragment_attachment_media_asset"),
+        ForeignKey(
+            "t_media_asset.id", ondelete="CASCADE", name="fk_t_fragment_attachment_media_asset"
+        ),
         nullable=False,
         comment="媒体对象ID",
     )
     # [新增] 附件的提供者记录在关联表，不放在可被多人复用的文件对象上。
     contributor_id = Column(
         BigInteger,
-        ForeignKey("t_memory_contributor.id", ondelete="RESTRICT", name="fk_t_fragment_attachment_contributor"),
+        ForeignKey(
+            "t_memory_contributor.id",
+            ondelete="RESTRICT",
+            name="fk_t_fragment_attachment_contributor",
+        ),
         nullable=False,
         comment="添加附件的提供者ID",
     )
@@ -57,10 +65,16 @@ class FragmentAttachment(Base):
     sort_order = Column(Integer, nullable=False, server_default=text("0"), comment="展示顺序")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")
     created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间"
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
     )
     updated_by = Column(BigInteger, nullable=True, comment="更新人ID")
     updated_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="更新时间"
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="更新时间",
     )
     is_del = Column(Boolean, nullable=False, server_default=text("false"), comment="是否删除")

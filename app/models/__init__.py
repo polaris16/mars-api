@@ -3,6 +3,7 @@
 from app.models.base import Base
 from app.models.t_auth_session import AuthSession
 from app.models.t_interest_domain import InterestDomain
+
 # [新增] 录音、语音片段及可复用媒体对象模型，供 Alembic 加载。
 from app.models.t_fragment_attachment import FragmentAttachment
 from app.models.t_media_asset import MediaAsset

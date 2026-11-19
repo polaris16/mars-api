@@ -3,8 +3,19 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
 from app.schemas.memory_extraction import ExtractionJobResponse
+
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 PG_INTEGER_MAX = (1 << 31) - 1
 PG_BIGINT_MAX = (1 << 63) - 1
@@ -18,11 +29,16 @@ class PageResponse(BaseModel):
 
 class SessionCreate(BaseModel):
     topic_id: int | None = None
-    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = "未命名"
+    title: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)
+    ] = "未命名"
 
 
 class SessionPatch(BaseModel):
-    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
+    title: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+        | None
+    ) = None
     topic_id: int | None = None
     is_favorite: bool | None = None
 
@@ -44,7 +60,9 @@ class SessionSummary(BaseModel):
     title: str
     is_favorite: bool
     # [UPDATED] Accept the persisted model name and the API response name while serializing consistently.
-    last_recorded_at: datetime | None = Field(validation_alias=AliasChoices("last_recorded_at", "last_material_at"))
+    last_recorded_at: datetime | None = Field(
+        validation_alias=AliasChoices("last_recorded_at", "last_material_at")
+    )
     created_at: datetime
     fragment_count: int = 0
     attachment_count: int = 0
@@ -60,7 +78,9 @@ class UploadAuthorizationRequest(BaseModel):
     purpose: Literal["recording", "source", "attachment"]
     media_type: Literal["audio", "image", "video", "text"]
     filename: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
-    content_type: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    content_type: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)
+    ]
     size_bytes: int = Field(gt=0)
     sha256: Sha256 | None = None
     session_id: int | None = None
@@ -69,11 +89,23 @@ class UploadAuthorizationRequest(BaseModel):
     @model_validator(mode="after")
     def validate_purpose_and_binding(self):
         if self.purpose == "recording":
-            valid = self.media_type == "audio" and self.session_id is not None and self.fragment_id is None
+            valid = (
+                self.media_type == "audio"
+                and self.session_id is not None
+                and self.fragment_id is None
+            )
         elif self.purpose == "source":
-            valid = self.media_type in {"text", "video"} and self.session_id is not None and self.fragment_id is None
+            valid = (
+                self.media_type in {"text", "video"}
+                and self.session_id is not None
+                and self.fragment_id is None
+            )
         else:
-            valid = self.media_type in {"audio", "image", "video"} and self.fragment_id is not None and self.session_id is None
+            valid = (
+                self.media_type in {"audio", "image", "video"}
+                and self.fragment_id is not None
+                and self.session_id is None
+            )
         if not valid:
             raise ValueError("purpose, media_type, and session/fragment binding are inconsistent")
         return self
@@ -130,11 +162,19 @@ class FragmentCreate(BaseModel):
                 raise ValueError("audio_asset_id 与 source_asset_id 不可冲突")
             if self.source_type != "audio":
                 raise ValueError("audio_asset_id 仅适用于 audio 类型")
-        if self.source_type == "audio" and self.audio_asset_id is None and self.source_asset_id is None:
+        if (
+            self.source_type == "audio"
+            and self.audio_asset_id is None
+            and self.source_asset_id is None
+        ):
             raise ValueError("audio 类型必须提供 source_asset_id")
         if self.source_type == "video" and self.source_asset_id is None:
             raise ValueError("video 类型必须提供 source_asset_id")
-        if self.source_type == "text" and not (self.content_text and self.content_text.strip()) and self.source_asset_id is None:
+        if (
+            self.source_type == "text"
+            and not (self.content_text and self.content_text.strip())
+            and self.source_asset_id is None
+        ):
             raise ValueError("text 类型必须提供 content_text 或 source_asset_id")
         return self
 

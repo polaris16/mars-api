@@ -7,7 +7,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.auth import LoginRequest, LoginResponse, LoginUserResponse, MessageResponse, SendCodeRequest, SendCodeResponse
+from app.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    LoginUserResponse,
+    MessageResponse,
+    SendCodeRequest,
+    SendCodeResponse,
+)
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])

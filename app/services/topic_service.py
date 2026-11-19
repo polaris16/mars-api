@@ -19,7 +19,9 @@ class TopicService:
             .from_select(
                 ["topic_id", "user_id", "created_by", "updated_by"],
                 select(Topic.id, literal(user_id), literal(user_id), literal(user_id)).where(
-                    Topic.id == topic_id, Topic.is_enabled.is_(True), Topic.is_del.is_(False),
+                    Topic.id == topic_id,
+                    Topic.is_enabled.is_(True),
+                    Topic.is_del.is_(False),
                 ),
             )
             .on_conflict_do_nothing(index_elements=["topic_id", "user_id"])
@@ -69,9 +71,7 @@ class TopicService:
             or_(interest_match, Topic.is_general.is_(True)),
         )
 
-        total = session.scalar(
-            select(func.count(Topic.id)).where(*available_topic_filter)
-        ) or 0
+        total = session.scalar(select(func.count(Topic.id)).where(*available_topic_filter)) or 0
 
         is_interest_source = case(
             (interest_match, 0),

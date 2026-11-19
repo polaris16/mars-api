@@ -28,14 +28,18 @@ class UserService:
         """只更新 PATCH 请求实际提交的资料字段。"""
         updates = payload.model_dump(exclude_unset=True)
         if not updates:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="至少提供一个待更新字段")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="至少提供一个待更新字段"
+            )
 
         with session.begin():
             current_user = session.scalar(
                 select(User).where(User.id == user.id, User.is_del.is_(False))
             )
             if current_user is None:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用"
+                )
             for field, value in updates.items():
                 setattr(current_user, field, value)
             current_user.updated_by = current_user.id

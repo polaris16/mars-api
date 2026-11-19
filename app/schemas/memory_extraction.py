@@ -3,8 +3,15 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
-
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    model_validator,
+)
 
 ElementType = Literal["event", "fact", "life_stage", "other"]
 ElementOrigin = Literal["extracted", "fallback"]
@@ -105,8 +112,13 @@ class ExtractedElement(BaseModel):
     def validate_time_range(self):
         if self.time_start and self.time_end and self.time_start > self.time_end:
             raise ValueError("time_start must be on or before time_end")
-        strings = (self.summary, self.source_quote, self.time_description, self.location_description,
-                   *self.attribute_confidence)
+        strings = (
+            self.summary,
+            self.source_quote,
+            self.time_description,
+            self.location_description,
+            *self.attribute_confidence,
+        )
         if any(value and "\x00" in value for value in strings):
             raise ValueError("text values must not contain NUL")
         return self

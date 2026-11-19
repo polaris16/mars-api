@@ -4,7 +4,6 @@ import re
 
 from app.models import Base
 
-
 TABLE_NAMES = {
     "t_ai_processing_job",
     "t_memory_element",
@@ -31,7 +30,11 @@ def test_business_tables_and_columns_have_chinese_comments():
     for table in Base.metadata.sorted_tables:
         if not chinese.search(table.comment or ""):
             missing.append(table.name)
-        missing.extend(f"{table.name}.{column.name}" for column in table.columns if not chinese.search(column.comment or ""))
+        missing.extend(
+            f"{table.name}.{column.name}"
+            for column in table.columns
+            if not chinese.search(column.comment or "")
+        )
     assert not missing, missing
 
 
@@ -53,9 +56,7 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
     for table_name, expected_targets in expected_foreign_keys.items():
         table = Base.metadata.tables[table_name]
         actual_targets = {
-            fk.target_fullname
-            for column in table.columns
-            for fk in column.foreign_keys
+            fk.target_fullname for column in table.columns for fk in column.foreign_keys
         }
         assert expected_targets <= actual_targets
 
@@ -67,4 +68,7 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
         "t_memory_conflict",
     ):
         indexes = Base.metadata.tables[table_name].indexes
-        assert any(index.unique and index.dialect_options["postgresql"].get("where") is not None for index in indexes)
+        assert any(
+            index.unique and index.dialect_options["postgresql"].get("where") is not None
+            for index in indexes
+        )

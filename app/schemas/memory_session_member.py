@@ -5,7 +5,6 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
-
 MemberRole = Literal["viewer", "contributor", "editor", "delegate"]
 
 

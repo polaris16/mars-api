@@ -10,30 +10,77 @@ import os
 import struct
 import uuid
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from app.db.database import SessionLocal
 from app.core.config import get_settings
+from app.db.database import SessionLocal
 from app.main import app
 from app.models import Topic
 
-
 DEMO_TOPICS = [
-    ("ui_demo_technology_discovery", "科技发现", "cpu", "科技数码", 10, 1200,
-     "聊聊最近惊艳你的前沿科技或数码产品。", "最近有什么新科技让您觉得特别有意思？"),
-    ("ui_demo_relax_and_vent", "解压吐槽", "smile", "生活", 20, 856,
-     "把积压的烦恼一吐为快，听听大家的生活经验。", "最近有什么烦心事，想找个人聊聊？"),
-    ("ui_demo_deep_reading", "深度阅读", "book-open", "阅读", 30, 640,
-     "分享一本曾触动你心灵或改变观念的书。", "有没有一本书让您至今记得很深？"),
-    ("ui_demo_life_moments", "生活碎片", "sun", "生活", 40, 1500,
-     "记录街角日落、热气腾腾的咖啡等日常瞬间。", "最近生活里有没有一个小瞬间让您觉得很舒服？"),
-    ("ui_demo_favorite_song", "单曲循环", "headphones", "音乐", 50, 2100,
-     "分享最近反复播放的旋律与背后的故事。", "有没有一首歌，您最近总想再听一遍？"),
-    ("ui_demo_work_memories", "工作回忆", "briefcase", "职场", 60, 930,
-     "聊聊职场蜕变、团队共事或那些难忘的瞬间。", "您工作经历中最难忘的一位同事或一件事是什么？"),
+    (
+        "ui_demo_technology_discovery",
+        "科技发现",
+        "cpu",
+        "科技数码",
+        10,
+        1200,
+        "聊聊最近惊艳你的前沿科技或数码产品。",
+        "最近有什么新科技让您觉得特别有意思？",
+    ),
+    (
+        "ui_demo_relax_and_vent",
+        "解压吐槽",
+        "smile",
+        "生活",
+        20,
+        856,
+        "把积压的烦恼一吐为快，听听大家的生活经验。",
+        "最近有什么烦心事，想找个人聊聊？",
+    ),
+    (
+        "ui_demo_deep_reading",
+        "深度阅读",
+        "book-open",
+        "阅读",
+        30,
+        640,
+        "分享一本曾触动你心灵或改变观念的书。",
+        "有没有一本书让您至今记得很深？",
+    ),
+    (
+        "ui_demo_life_moments",
+        "生活碎片",
+        "sun",
+        "生活",
+        40,
+        1500,
+        "记录街角日落、热气腾腾的咖啡等日常瞬间。",
+        "最近生活里有没有一个小瞬间让您觉得很舒服？",
+    ),
+    (
+        "ui_demo_favorite_song",
+        "单曲循环",
+        "headphones",
+        "音乐",
+        50,
+        2100,
+        "分享最近反复播放的旋律与背后的故事。",
+        "有没有一首歌，您最近总想再听一遍？",
+    ),
+    (
+        "ui_demo_work_memories",
+        "工作回忆",
+        "briefcase",
+        "职场",
+        60,
+        930,
+        "聊聊职场蜕变、团队共事或那些难忘的瞬间。",
+        "您工作经历中最难忘的一位同事或一件事是什么？",
+    ),
 ]
 
 
@@ -41,10 +88,18 @@ def seed_ui_topics() -> dict[str, int]:
     """幂等写入 UI 演示话题；讨论人数使用截图中的虚拟展示数值。"""
     rows = [
         {
-            "code": code, "title": title, "icon_key": icon, "category": category,
-            "sort_order": sort_order, "participant_count": participant_count,
-            "summary": summary, "prompt": prompt, "is_general": True,
-            "is_enabled": True, "is_del": False, "life_stage": None,
+            "code": code,
+            "title": title,
+            "icon_key": icon,
+            "category": category,
+            "sort_order": sort_order,
+            "participant_count": participant_count,
+            "summary": summary,
+            "prompt": prompt,
+            "is_general": True,
+            "is_enabled": True,
+            "is_del": False,
+            "life_stage": None,
         }
         for code, title, icon, category, sort_order, participant_count, summary, prompt in DEMO_TOPICS
     ]
@@ -54,8 +109,16 @@ def seed_ui_topics() -> dict[str, int]:
         set_={
             key: getattr(statement.excluded, key)
             for key in (
-                "title", "icon_key", "category", "sort_order", "participant_count",
-                "summary", "prompt", "is_general", "is_enabled", "is_del",
+                "title",
+                "icon_key",
+                "category",
+                "sort_order",
+                "participant_count",
+                "summary",
+                "prompt",
+                "is_general",
+                "is_enabled",
+                "is_del",
             )
         },
     )
@@ -70,21 +133,41 @@ def seed_ui_topics() -> dict[str, int]:
 def pcm_wav(sample: int) -> bytes:
     data = bytes([sample])
     return (
-        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt "
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
         + struct.pack("<IHHIIHH", 16, 1, 1, 8000, 8000, 1, 8)
-        + b"data" + struct.pack("<I", len(data)) + data
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
     )
 
 
-def upload_asset(client, headers, *, purpose, media_type, filename, content_type,
-                 content, session_id=None, fragment_id=None):
+def upload_asset(
+    client,
+    headers,
+    *,
+    purpose,
+    media_type,
+    filename,
+    content_type,
+    content,
+    session_id=None,
+    fragment_id=None,
+):
     request_body = {
-        "purpose": purpose, "media_type": media_type, "filename": filename,
-        "content_type": content_type, "size_bytes": len(content),
+        "purpose": purpose,
+        "media_type": media_type,
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
-        "session_id": session_id, "fragment_id": fragment_id,
+        "session_id": session_id,
+        "fragment_id": fragment_id,
     }
-    auth = client.post("/api/media-assets/upload-authorizations", headers=headers, json=request_body)
+    auth = client.post(
+        "/api/media-assets/upload-authorizations", headers=headers, json=request_body
+    )
     assert auth.status_code in (200, 201), auth.text
     result = auth.json()
     if not result["reused"]:
@@ -131,7 +214,8 @@ def test_recording_media_real_database_business_flow(monkeypatch):
         }
 
         created_session = client.post(
-            "/api/recording-sessions", headers=headers,
+            "/api/recording-sessions",
+            headers=headers,
             json={
                 "topic_id": topic_ids["ui_demo_technology_discovery"],
                 "title": f"{title_prefix}-主会话",
@@ -142,8 +226,13 @@ def test_recording_media_real_database_business_flow(monkeypatch):
 
         wav_one = pcm_wav(128)
         audio_one = upload_asset(
-            client, headers, purpose="recording", media_type="audio",
-            filename="第一段口述.wav", content_type="audio/wav", content=wav_one,
+            client,
+            headers,
+            purpose="recording",
+            media_type="audio",
+            filename="第一段口述.wav",
+            content_type="audio/wav",
+            content=wav_one,
             session_id=session_id,
         )
         assert audio_one["upload_status"] == "uploaded"
@@ -174,9 +263,13 @@ def test_recording_media_real_database_business_flow(monkeypatch):
             "/api/media-assets/upload-authorizations",
             headers=headers,
             json={
-                "purpose": "recording", "media_type": "audio", "filename": "重复录音.wav",
-                "content_type": "audio/wav", "size_bytes": len(wav_one),
-                "sha256": hashlib.sha256(wav_one).hexdigest(), "session_id": session_id,
+                "purpose": "recording",
+                "media_type": "audio",
+                "filename": "重复录音.wav",
+                "content_type": "audio/wav",
+                "size_bytes": len(wav_one),
+                "sha256": hashlib.sha256(wav_one).hexdigest(),
+                "session_id": session_id,
             },
         )
         assert duplicate.status_code == 200, duplicate.text
@@ -188,26 +281,41 @@ def test_recording_media_real_database_business_flow(monkeypatch):
         )
         image_two_bytes = b"\x89PNG\r\n\x1a\nMock UI test image two"
         image_one = upload_asset(
-            client, headers, purpose="attachment", media_type="image",
-            filename="老照片.png", content_type="image/png", content=image_one_bytes,
+            client,
+            headers,
+            purpose="attachment",
+            media_type="image",
+            filename="老照片.png",
+            content_type="image/png",
+            content=image_one_bytes,
             fragment_id=fragment_id,
         )
         image_two = upload_asset(
-            client, headers, purpose="attachment", media_type="image",
-            filename="旧车票.png", content_type="image/png", content=image_two_bytes,
+            client,
+            headers,
+            purpose="attachment",
+            media_type="image",
+            filename="旧车票.png",
+            content_type="image/png",
+            content=image_two_bytes,
             fragment_id=fragment_id,
         )
         created_attachments = client.post(
             f"/api/memory-fragments/{fragment_id}/attachments",
             headers=headers,
-            json={"items": [
-                {"asset_id": image_one["id"], "caption": "老照片", "sort_order": 1},
-                {"asset_id": image_two["id"], "caption": "旧车票", "sort_order": 2},
-            ]},
+            json={
+                "items": [
+                    {"asset_id": image_one["id"], "caption": "老照片", "sort_order": 1},
+                    {"asset_id": image_two["id"], "caption": "旧车票", "sort_order": 2},
+                ]
+            },
         )
         assert created_attachments.status_code == 201, created_attachments.text
         attachment_one_id, attachment_two_id = [item["id"] for item in created_attachments.json()]
-        assert client.delete(f"/api/media-assets/{image_one['id']}", headers=headers).status_code == 409
+        assert (
+            client.delete(f"/api/media-assets/{image_one['id']}", headers=headers).status_code
+            == 409
+        )
 
         attachments = client.get(
             f"/api/memory-fragments/{fragment_id}/attachments", headers=headers
@@ -230,21 +338,30 @@ def test_recording_media_real_database_business_flow(monkeypatch):
             headers=headers,
         )
         assert removed_attachment.status_code == 200
-        assert client.delete(f"/api/media-assets/{image_two['id']}", headers=headers).status_code == 200
-        assert client.get(f"/api/media-assets/{image_one['id']}", headers=headers).status_code == 200
+        assert (
+            client.delete(f"/api/media-assets/{image_two['id']}", headers=headers).status_code
+            == 200
+        )
+        assert (
+            client.get(f"/api/media-assets/{image_one['id']}", headers=headers).status_code == 200
+        )
 
         fragments = client.get(f"/api/recording-sessions/{session_id}/fragments", headers=headers)
         assert fragments.status_code == 200
         assert fragments.json()["total"] == 1
-        assert client.get(
-            f"/api/recording-sessions/{session_id}/fragments/{fragment_id}", headers=headers
-        ).status_code == 200
+        assert (
+            client.get(
+                f"/api/recording-sessions/{session_id}/fragments/{fragment_id}", headers=headers
+            ).status_code
+            == 200
+        )
         media_page = client.get(
             "/api/media-assets", headers=headers, params={"page": 1, "page_size": 100}
         )
         assert media_page.status_code == 200
         assert {row["id"] for row in media_page.json()["items"]} >= {
-            audio_one["id"], image_one["id"]
+            audio_one["id"],
+            image_one["id"],
         }
 
         session_list = client.get("/api/recording-sessions", headers=headers)
@@ -263,7 +380,8 @@ def test_recording_media_real_database_business_flow(monkeypatch):
 
         # 辅助记录覆盖软删除路径，主会话及主片段保留供后续检查。
         auxiliary_session = client.post(
-            "/api/recording-sessions", headers=headers,
+            "/api/recording-sessions",
+            headers=headers,
             json={"title": f"{title_prefix}-待删除会话"},
         )
         assert auxiliary_session.status_code == 201, auxiliary_session.text
@@ -280,9 +398,14 @@ def test_recording_media_real_database_business_flow(monkeypatch):
 
         text_bytes = "A memory imported from a text file.".encode("utf-8")
         text_asset = upload_asset(
-            client, headers, purpose="source", media_type="text",
-            filename="memory.txt", content_type="text/plain; charset=utf-8",
-            content=text_bytes, session_id=auxiliary_session_id,
+            client,
+            headers,
+            purpose="source",
+            media_type="text",
+            filename="memory.txt",
+            content_type="text/plain; charset=utf-8",
+            content=text_bytes,
+            session_id=auxiliary_session_id,
         )
         imported_text = client.post(
             f"/api/recording-sessions/{auxiliary_session_id}/fragments",
@@ -292,20 +415,34 @@ def test_recording_media_real_database_business_flow(monkeypatch):
         assert imported_text.status_code == 201, imported_text.text
         assert imported_text.json()["source_asset"]["id"] == text_asset["id"]
 
-        assert client.delete(
-            f"/api/recording-sessions/{auxiliary_session_id}/fragments/{direct_text.json()['id']}",
-            headers=headers,
-        ).status_code == 200
-        assert client.delete(
-            f"/api/recording-sessions/{auxiliary_session_id}/fragments/{imported_text.json()['id']}",
-            headers=headers,
-        ).status_code == 200
-        assert client.delete(f"/api/media-assets/{text_asset['id']}", headers=headers).status_code == 200
+        assert (
+            client.delete(
+                f"/api/recording-sessions/{auxiliary_session_id}/fragments/{direct_text.json()['id']}",
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.delete(
+                f"/api/recording-sessions/{auxiliary_session_id}/fragments/{imported_text.json()['id']}",
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.delete(f"/api/media-assets/{text_asset['id']}", headers=headers).status_code
+            == 200
+        )
 
         wav_two = pcm_wav(129)
         audio_two = upload_asset(
-            client, headers, purpose="recording", media_type="audio",
-            filename="第二段口述.wav", content_type="audio/wav", content=wav_two,
+            client,
+            headers,
+            purpose="recording",
+            media_type="audio",
+            filename="第二段口述.wav",
+            content_type="audio/wav",
+            content=wav_two,
             session_id=session_id,
         )
         auxiliary_fragment = client.post(
@@ -316,22 +453,36 @@ def test_recording_media_real_database_business_flow(monkeypatch):
         assert auxiliary_fragment.status_code == 201, auxiliary_fragment.text
         auxiliary_fragment_id = auxiliary_fragment.json()["id"]
         assert auxiliary_fragment.json()["sequence_no"] == 2
-        assert client.delete(
-            f"/api/recording-sessions/{session_id}/fragments/{auxiliary_fragment_id}",
-            headers=headers,
-        ).status_code == 200
-        assert client.delete(f"/api/media-assets/{audio_two['id']}", headers=headers).status_code == 200
-        assert client.delete(
-            f"/api/recording-sessions/{auxiliary_session_id}", headers=headers
-        ).status_code == 200
+        assert (
+            client.delete(
+                f"/api/recording-sessions/{session_id}/fragments/{auxiliary_fragment_id}",
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.delete(f"/api/media-assets/{audio_two['id']}", headers=headers).status_code
+            == 200
+        )
+        assert (
+            client.delete(
+                f"/api/recording-sessions/{auxiliary_session_id}", headers=headers
+            ).status_code
+            == 200
+        )
 
-    print(json.dumps({
-        "seeded_topic_ids": topic_ids,
-        "test_user_id": user_id,
-        "active_session_id": session_id,
-        "deleted_session_id": auxiliary_session_id,
-        "active_fragment_id": fragment_id,
-        "soft_deleted_fragment_id": auxiliary_fragment_id,
-        "active_asset_ids": [audio_one["id"], image_one["id"]],
-        "soft_deleted_asset_ids": [image_two["id"], audio_two["id"]],
-    }, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "seeded_topic_ids": topic_ids,
+                "test_user_id": user_id,
+                "active_session_id": session_id,
+                "deleted_session_id": auxiliary_session_id,
+                "active_fragment_id": fragment_id,
+                "soft_deleted_fragment_id": auxiliary_fragment_id,
+                "active_asset_ids": [audio_one["id"], image_one["id"]],
+                "soft_deleted_asset_ids": [image_two["id"], audio_two["id"]],
+            },
+            ensure_ascii=False,
+        )
+    )

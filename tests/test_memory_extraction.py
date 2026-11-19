@@ -1,8 +1,8 @@
 """Exercise memory extraction over HTTP and through the single-job Worker entry point."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-import json
 from uuid import uuid4
 
 import pytest
@@ -13,19 +13,28 @@ from sqlalchemy import JSON, Integer, create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies import get_current_user
 from app.core.config import get_settings
 from app.db.database import get_db
-from app.api.dependencies import get_current_user
 from app.main import create_app
 from app.models import (
-    AIProcessingJob, FragmentAttachment, MediaAsset, MemoryContributor, MemoryElement, MemoryFragment,
-    MemorySession, MemorySessionMember, Topic, TopicParticipant, User, UserRelationship,
+    AIProcessingJob,
+    FragmentAttachment,
+    MediaAsset,
+    MemoryContributor,
+    MemoryElement,
+    MemoryFragment,
+    MemorySession,
+    MemorySessionMember,
+    Topic,
+    TopicParticipant,
+    User,
+    UserRelationship,
 )
 from app.schemas.memory_extraction import ExtractedElement
 from app.services.memory_extraction_service import MemoryExtractionService
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError, TextExtractionModel
-
 
 SESSION = "/api/recording-sessions/11"
 FRAGMENTS = f"{SESSION}/fragments"
@@ -43,18 +52,26 @@ def extraction_api(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "ai_text_max_attempts", 3)
     monkeypatch.setattr(settings, "object_storage_mode", "mock")
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path / "media"))
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
 
     @event.listens_for(engine, "connect")
     def add_functions(connection, _):
         connection.create_function("btrim", 1, str.strip)
-        connection.create_function("jsonb_typeof", 1, lambda value: "object" if isinstance(json.loads(value), dict) else "null")
+        connection.create_function(
+            "jsonb_typeof",
+            1,
+            lambda value: "object" if isinstance(json.loads(value), dict) else "null",
+        )
 
     for model in (MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob):
         column = model.__table__.c.id
         monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
     for model, name in (
-        (AIProcessingJob, "input_payload"), (AIProcessingJob, "result_payload"), (MemoryElement, "attribute_confidence"),
+        (AIProcessingJob, "input_payload"),
+        (AIProcessingJob, "result_payload"),
+        (MemoryElement, "attribute_confidence"),
     ):
         column = model.__table__.columns[name]
         monkeypatch.setattr(column, "type", column.type.with_variant(JSON(), "sqlite"))
@@ -64,22 +81,39 @@ def extraction_api(tmp_path, monkeypatch):
         if index.name == "uq_t_memory_element_fragment_sequence_active":
             monkeypatch.setitem(index.dialect_options["sqlite"], "where", text("is_del = false"))
     with engine.begin() as db:
-        db.execute(text("""CREATE TABLE t_user (
+        db.execute(
+            text("""CREATE TABLE t_user (
             id INTEGER PRIMARY KEY, username TEXT, display_name TEXT, avatar_url TEXT, phone TEXT,
             sex INTEGER, birth_date DATE, tags TEXT, user_role INTEGER, created_by INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_by INTEGER,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_del BOOLEAN DEFAULT 0,
             onboarding_completed BOOLEAN DEFAULT 0
-        )"""))
-        db.execute(text("""INSERT INTO t_user (id, username, phone)
+        )""")
+        )
+        db.execute(
+            text("""INSERT INTO t_user (id, username, phone)
             VALUES (1, 'owner', '13300000001'), (2, 'viewer', '13300000002'), (3, 'outsider', '13300000003')
-        """))
-        models = (MemorySession, MemorySessionMember, UserRelationship, MemoryContributor, MediaAsset,
-                  MemoryFragment, FragmentAttachment, Topic, TopicParticipant, AIProcessingJob, MemoryElement)
+        """)
+        )
+        models = (
+            MemorySession,
+            MemorySessionMember,
+            UserRelationship,
+            MemoryContributor,
+            MediaAsset,
+            MemoryFragment,
+            FragmentAttachment,
+            Topic,
+            TopicParticipant,
+            AIProcessingJob,
+            MemoryElement,
+        )
         MemorySession.metadata.create_all(db, tables=[model.__table__ for model in models])
         db.execute(text("INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1)"))
-        db.execute(text("""INSERT INTO t_memory_session_member
-            (id, session_id, user_id, role, granted_by_user_id) VALUES (21, 11, 2, 'viewer', 1)"""))
+        db.execute(
+            text("""INSERT INTO t_memory_session_member
+            (id, session_id, user_id, role, granted_by_user_id) VALUES (21, 11, 2, 'viewer', 1)""")
+        )
     factory = sessionmaker(engine, autoflush=False, expire_on_commit=False)
 
     def override_db():
@@ -88,7 +122,11 @@ def extraction_api(tmp_path, monkeypatch):
 
     def override_user(request: Request, db: Session = Depends(get_db)):
         header = request.headers.get("Authorization")
-        if header not in {OWNER["Authorization"], VIEWER["Authorization"], OUTSIDER["Authorization"]}:
+        if header not in {
+            OWNER["Authorization"],
+            VIEWER["Authorization"],
+            OUTSIDER["Authorization"],
+        }:
             raise HTTPException(status_code=401)
         user = db.get(User, int(header.split()[-1]))
         db.rollback()
@@ -105,9 +143,15 @@ def extraction_api(tmp_path, monkeypatch):
 
 
 def save_text(client, source="我在上海读书。", **fields):
-    response = client.post(FRAGMENTS, headers=OWNER, json={
-        "source_type": "text", "content_text": source, **fields,
-    })
+    response = client.post(
+        FRAGMENTS,
+        headers=OWNER,
+        json={
+            "source_type": "text",
+            "content_text": source,
+            **fields,
+        },
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -123,16 +167,24 @@ def test_synchronous_extraction_is_idempotent_and_provenance_is_scoped(extractio
     assert client.get(jobs, headers=VIEWER).json()["total"] == 1
     assert client.post(jobs, headers=VIEWER, json={}).status_code == 403
     assert client.get(f"{SESSION}/extraction-jobs/{job['id']}", headers=OUTSIDER).status_code == 404
-    rows = client.get(ELEMENTS, headers=VIEWER, params={"processing_job_id": job["id"], "origin": "extracted"})
-    item, = rows.json()["items"]
+    rows = client.get(
+        ELEMENTS, headers=VIEWER, params={"processing_job_id": job["id"], "origin": "extracted"}
+    )
+    (item,) = rows.json()["items"]
     url = f"{ELEMENTS}/{item['id']}"
     assert client.get(url, headers=OWNER).json() == item
     assert client.get(url.replace("/11/", "/12/"), headers=OWNER).status_code == 404
     evidence = client.get(f"{url}/provenance", headers=VIEWER).json()
     assert evidence["source_kind"] == "content_text"
-    assert source[evidence["start_offset"]:evidence["end_offset"]] == evidence["source_quote"] == source.strip()
+    assert (
+        source[evidence["start_offset"] : evidence["end_offset"]]
+        == evidence["source_quote"]
+        == source.strip()
+    )
     with factory() as db:
-        assert source not in json.dumps(db.get(AIProcessingJob, job["id"]).input_payload, ensure_ascii=False)
+        assert source not in json.dumps(
+            db.get(AIProcessingJob, job["id"]).input_payload, ensure_ascii=False
+        )
     assert client.delete(f"{FRAGMENTS}/{fragment['id']}", headers=OWNER).status_code == 200
     assert client.get(f"{url}/provenance", headers=VIEWER).status_code == 404
 
@@ -146,7 +198,12 @@ def test_fragment_save_idempotency_key_survives_retries_and_deletion(extraction_
     assert first.status_code == second.status_code == 201
     assert first.json()["id"] == second.json()["id"]
     assert first.json()["extraction_job"] == second.json()["extraction_job"]
-    assert client.post(FRAGMENTS, headers=headers, json={**payload, "content_text": "另一条记忆"}).status_code == 409
+    assert (
+        client.post(
+            FRAGMENTS, headers=headers, json={**payload, "content_text": "另一条记忆"}
+        ).status_code
+        == 409
+    )
     with factory() as db:
         assert len(db.scalars(select(MemoryFragment)).all()) == 1
         assert len(db.scalars(select(AIProcessingJob)).all()) == 1
@@ -155,21 +212,40 @@ def test_fragment_save_idempotency_key_survives_retries_and_deletion(extraction_
     fragment_url = f"{FRAGMENTS}/{first.json()['id']}"
     assert client.delete(fragment_url, headers=OWNER).status_code == 200
     assert client.post(FRAGMENTS, headers=headers, json=payload).status_code == 409
-    assert client.post(FRAGMENTS.replace("/11/", "/12/"), headers=headers, json=payload).status_code == 201
+    assert (
+        client.post(FRAGMENTS.replace("/11/", "/12/"), headers=headers, json=payload).status_code
+        == 201
+    )
 
 
 def test_late_raw_transcript_starts_extraction_once_and_preserves_evidence(extraction_api):
     client, factory = extraction_api
     now = datetime.now(timezone.utc)
     with factory.begin() as db:
-        db.add(MediaAsset(
-            id=25, uploaded_by_user_id=1, purpose="recording", media_type="audio", storage_provider="mock",
-            storage_region="local", bucket_name="test", object_key="audio.wav", content_type="audio/wav",
-            expected_size_bytes=1, size_bytes=1, content_sha256="a" * 64,
-            upload_status="uploaded", uploaded_at=now, upload_expires_at=now,
-        ))
+        db.add(
+            MediaAsset(
+                id=25,
+                uploaded_by_user_id=1,
+                purpose="recording",
+                media_type="audio",
+                storage_provider="mock",
+                storage_region="local",
+                bucket_name="test",
+                object_key="audio.wav",
+                content_type="audio/wav",
+                expected_size_bytes=1,
+                size_bytes=1,
+                content_sha256="a" * 64,
+                upload_status="uploaded",
+                uploaded_at=now,
+                upload_expires_at=now,
+            )
+        )
     created = client.post(FRAGMENTS, headers=OWNER, json={"audio_asset_id": 25})
-    assert created.status_code == 201 and created.json()["extraction_skip_reason"] == "SOURCE_TEXT_REQUIRED"
+    assert (
+        created.status_code == 201
+        and created.json()["extraction_skip_reason"] == "SOURCE_TEXT_REQUIRED"
+    )
     url = f"{FRAGMENTS}/{created.json()['id']}"
     assert client.patch(url, headers=OWNER, json={"transcript_edited": "校订稿"}).status_code == 200
     raw_url = f"{url}/transcript-raw"
@@ -178,14 +254,23 @@ def test_late_raw_transcript_starts_extraction_once_and_preserves_evidence(extra
     updated = client.put(raw_url, headers=OWNER, json=payload)
     assert updated.status_code == 200, updated.text
     result = updated.json()
-    assert result["transcript_edited"] == "校订稿" and result["transcript_raw"] == payload["transcript_raw"]
+    assert (
+        result["transcript_edited"] == "校订稿"
+        and result["transcript_raw"] == payload["transcript_raw"]
+    )
     assert result["extraction_job"]["status"] == "succeeded"
     repeat = client.put(raw_url, headers=OWNER, json=payload)
     assert repeat.json()["extraction_job"] == result["extraction_job"]
-    assert client.put(raw_url, headers=OWNER, json={"transcript_raw": "不同原文"}).status_code == 409
-    element, = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert (
+        client.put(raw_url, headers=OWNER, json={"transcript_raw": "不同原文"}).status_code == 409
+    )
+    (element,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
     proof = client.get(f"{ELEMENTS}/{element['id']}/provenance", headers=OWNER).json()
-    assert (proof["source_kind"], proof["source_quote"], proof["start_offset"]) == ("transcript_raw", "我的录音原文。", 2)
+    assert (proof["source_kind"], proof["source_quote"], proof["start_offset"]) == (
+        "transcript_raw",
+        "我的录音原文。",
+        2,
+    )
 
 
 def test_session_latest_recorded_at_tracks_live_fragments_after_backfill_and_delete(extraction_api):
@@ -224,7 +309,9 @@ def test_retry_budget_fallback_and_manual_replacement(extraction_api, monkeypatc
     service = MemoryExtractionService()
     for attempts in (2, 3):
         with factory.begin() as db:
-            db.get(AIProcessingJob, job["id"]).available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            db.get(AIProcessingJob, job["id"]).available_at = datetime.now(
+                timezone.utc
+            ) - timedelta(seconds=1)
         with factory() as db:
             assert service.run(db)
         status = client.get(job_url, headers=OWNER).json()
@@ -254,7 +341,10 @@ def test_configuration_and_external_opt_in(extraction_api, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "ai_text_enabled", False)
     fragment = save_text(client)
-    assert fragment["extraction_job"] is None and fragment["extraction_skip_reason"] == "EXTRACTION_UNAVAILABLE"
+    assert (
+        fragment["extraction_job"] is None
+        and fragment["extraction_skip_reason"] == "EXTRACTION_UNAVAILABLE"
+    )
     jobs = f"{FRAGMENTS}/{fragment['id']}/extraction-jobs"
     assert client.post(jobs, headers=OWNER, json={}).status_code == 503
     monkeypatch.setattr(settings, "ai_text_enabled", True)
@@ -282,13 +372,21 @@ def test_unverifiable_model_evidence_uses_original_text_fallback(extraction_api,
     client, _ = extraction_api
 
     def fabricated_quote(*_):
-        return [ExtractedElement(element_type="event", summary="编造的事件", source_quote="我在天津上学。")]
+        return [
+            ExtractedElement(
+                element_type="event", summary="编造的事件", source_quote="我在天津上学。"
+            )
+        ]
 
     monkeypatch.setattr(TextExtractionModel, "extract", fabricated_quote)
     source = "我在上海上学。"
     job = save_text(client, source)["extraction_job"]
-    assert (job["status"], job["attempt_count"], job["error_code"]) == ("failed", 1, "MODEL_EVIDENCE_INVALID")
-    fallback, = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert (job["status"], job["attempt_count"], job["error_code"]) == (
+        "failed",
+        1,
+        "MODEL_EVIDENCE_INVALID",
+    )
+    (fallback,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
     assert fallback["origin"] == "fallback" and fallback["summary"] == source
     quote = client.get(f"{ELEMENTS}/{fallback['id']}/provenance", headers=OWNER).json()
     assert quote["source_quote"] is None and quote["source_text"] == source
@@ -298,19 +396,33 @@ def test_text_file_is_loaded_using_verified_digest(extraction_api):
     client, factory = extraction_api
     raw = "我在北京工作。".encode()
     with factory.begin() as db:
-        db.add(MediaAsset(
-            id=25, uploaded_by_user_id=1, purpose="source", media_type="text",
-            storage_provider="mock", storage_region="local", bucket_name="test", object_key="source.txt",
-            content_type="text/plain", expected_size_bytes=len(raw), size_bytes=len(raw),
-            content_sha256=sha256(raw).hexdigest(), upload_status="uploaded", uploaded_at=datetime.now(timezone.utc),
-            upload_expires_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            MediaAsset(
+                id=25,
+                uploaded_by_user_id=1,
+                purpose="source",
+                media_type="text",
+                storage_provider="mock",
+                storage_region="local",
+                bucket_name="test",
+                object_key="source.txt",
+                content_type="text/plain",
+                expected_size_bytes=len(raw),
+                size_bytes=len(raw),
+                content_sha256=sha256(raw).hexdigest(),
+                upload_status="uploaded",
+                uploaded_at=datetime.now(timezone.utc),
+                upload_expires_at=datetime.now(timezone.utc),
+            )
+        )
     storage = ObjectStorageService("")
     (storage.local_root / "source.txt").write_bytes(raw)
-    response = client.post(FRAGMENTS, headers=OWNER, json={"source_type": "text", "source_asset_id": 25})
+    response = client.post(
+        FRAGMENTS, headers=OWNER, json={"source_type": "text", "source_asset_id": 25}
+    )
     assert response.status_code == 201, response.text
     assert response.json()["extraction_job"]["status"] == "succeeded"
-    item, = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    (item,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
     evidence = client.get(f"{ELEMENTS}/{item['id']}/provenance", headers=OWNER).json()
     assert evidence["source_kind"] == "text_file" and evidence["source_asset_id"] == 25
 
@@ -324,13 +436,15 @@ def test_stale_lease_cannot_publish(extraction_api, monkeypatch):
     with factory() as db:
         first = service._claim(db, job_id)
     with factory.begin() as db:
-        db.get(AIProcessingJob, job_id).lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.get(AIProcessingJob, job_id).lease_expires_at = datetime.now(timezone.utc) - timedelta(
+            seconds=1
+        )
     with factory() as db:
         assert run(service, db)
         service._complete(db, first, None, [], ExtractionError("STALE"))
     with factory() as db:
         job = db.get(AIProcessingJob, job_id)
         assert job.status == "succeeded" and job.attempt_count == 2
-        failure, = job.result_payload["failures"]
+        (failure,) = job.result_payload["failures"]
         assert failure["attempt"] == 1 and failure["code"] == "WORKER_LEASE_EXPIRED"
         assert len(db.scalars(select(MemoryElement)).all()) == 1

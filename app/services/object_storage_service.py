@@ -1,20 +1,21 @@
 """[新增] 可切换的本地 Mock 与 S3 兼容 OSS 存储适配器。"""
 
-from datetime import datetime, timezone
+import base64
 import binascii
 import codecs
 import hashlib
 import hmac
 import json
 import os
+from datetime import datetime, timezone
 from http.client import IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
-import base64
 
-from fastapi import HTTPException, Request as FastAPIRequest
+from fastapi import HTTPException
+from fastapi import Request as FastAPIRequest
 
 from app.core.config import get_settings
 
@@ -31,7 +32,11 @@ class ObjectStorageService:
 
         if settings.object_storage_mode == "mock":
             configured_path = Path(settings.object_storage_mock_directory)
-            self.local_root = configured_path if configured_path.is_absolute() else Path(__file__).resolve().parents[2] / configured_path
+            self.local_root = (
+                configured_path
+                if configured_path.is_absolute()
+                else Path(__file__).resolve().parents[2] / configured_path
+            )
             self.local_root.mkdir(parents=True, exist_ok=True)
         elif (
             not self.endpoint
@@ -67,7 +72,9 @@ class ObjectStorageService:
         service_key = sign(region_key, "s3")
         return sign(service_key, "aws4_request")
 
-    def _presign(self, method: str, key: str, expires_in: int, content_type: str | None = None) -> str:
+    def _presign(
+        self, method: str, key: str, expires_in: int, content_type: str | None = None
+    ) -> str:
         now = datetime.now(timezone.utc)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date = now.strftime("%Y%m%d")
@@ -92,12 +99,51 @@ class ObjectStorageService:
         # [删除-旧] canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers)).rstrip("\n")
         # [修改] SigV4 要求规范请求头块以换行结尾，后续字段另起一行。
         canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers))
-        canonical_request = "\n".join((method, canonical_uri, canonical_query, canonical_headers, signed_headers, "UNSIGNED-PAYLOAD"))
-        string_to_sign = "\n".join(("AWS4-HMAC-SHA256", amz_date, credential_scope, hashlib.sha256(canonical_request.encode()).hexdigest()))
-        signature = hmac.new(self._signing_key(self.settings.object_storage_secret_access_key.get_secret_value(), date, self.settings.object_storage_region), string_to_sign.encode(), hashlib.sha256).hexdigest()
-        return urlunsplit((parts.scheme, parts.netloc, canonical_uri, f"{canonical_query}&X-Amz-Signature={signature}", ""))
+        canonical_request = "\n".join(
+            (
+                method,
+                canonical_uri,
+                canonical_query,
+                canonical_headers,
+                signed_headers,
+                "UNSIGNED-PAYLOAD",
+            )
+        )
+        string_to_sign = "\n".join(
+            (
+                "AWS4-HMAC-SHA256",
+                amz_date,
+                credential_scope,
+                hashlib.sha256(canonical_request.encode()).hexdigest(),
+            )
+        )
+        signature = hmac.new(
+            self._signing_key(
+                self.settings.object_storage_secret_access_key.get_secret_value(),
+                date,
+                self.settings.object_storage_region,
+            ),
+            string_to_sign.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                canonical_uri,
+                f"{canonical_query}&X-Amz-Signature={signature}",
+                "",
+            )
+        )
 
-    def _mock_token(self, method: str, key: str, content_type: str, expires_in: int, max_bytes: int | None = None) -> str:
+    def _mock_token(
+        self,
+        method: str,
+        key: str,
+        content_type: str,
+        expires_in: int,
+        max_bytes: int | None = None,
+    ) -> str:
         payload = {
             "method": method,
             "key": key,
@@ -105,7 +151,11 @@ class ObjectStorageService:
             "expires_at": int(datetime.now(timezone.utc).timestamp()) + expires_in,
             "max_bytes": max_bytes,
         }
-        encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+        encoded = (
+            base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode())
+            .decode()
+            .rstrip("=")
+        )
         secret = self.settings.object_storage_mock_secret.get_secret_value().encode()
         signature = hmac.new(secret, encoded.encode(), hashlib.sha256).hexdigest()
         return f"{encoded}.{signature}"
@@ -118,7 +168,9 @@ class ObjectStorageService:
             if not hmac.compare_digest(signature, expected):
                 raise ValueError
             payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-            if payload["method"] != expected_method or payload["expires_at"] <= int(datetime.now(timezone.utc).timestamp()):
+            if payload["method"] != expected_method or payload["expires_at"] <= int(
+                datetime.now(timezone.utc).timestamp()
+            ):
                 raise ValueError
             return payload
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, binascii.Error) as exc:
@@ -131,7 +183,9 @@ class ObjectStorageService:
             raise HTTPException(status_code=403, detail="无效的 Mock 对象键")
         return path
 
-    def create_upload_url(self, key: str, content_type: str, expires_in: int, max_bytes: int) -> str:
+    def create_upload_url(
+        self, key: str, content_type: str, expires_in: int, max_bytes: int
+    ) -> str:
         if self.mode == "mock":
             token = self._mock_token("PUT", key, content_type, expires_in, max_bytes)
             return f"{self.public_base_url}/api/mock-storage/upload/{token}"
@@ -160,7 +214,9 @@ class ObjectStorageService:
                     if size > payload["max_bytes"]:
                         raise HTTPException(status_code=413, detail="上传文件超过授权大小")
                     target.write(block)
-            metadata_path.write_text(json.dumps({"content_type": payload["content_type"]}), encoding="utf-8")
+            metadata_path.write_text(
+                json.dumps({"content_type": payload["content_type"]}), encoding="utf-8"
+            )
         except BaseException:
             path.unlink(missing_ok=True)
             metadata_path.unlink(missing_ok=True)
@@ -180,7 +236,9 @@ class ObjectStorageService:
             raise HTTPException(status_code=404, detail="Mock 文件信息不存在") from exc
         return path, content_type
 
-    def inspect_and_hash(self, key: str, max_bytes: int, validate_utf8: bool = False) -> tuple[int, str, str, bytes]:
+    def inspect_and_hash(
+        self, key: str, max_bytes: int, validate_utf8: bool = False
+    ) -> tuple[int, str, str, bytes]:
         utf8_decoder = codecs.getincrementaldecoder("utf-8")() if validate_utf8 else None
 
         def validate_text_chunk(block: bytes, final: bool = False) -> None:
@@ -245,11 +303,15 @@ class ObjectStorageService:
             if self.mode == "mock":
                 with self._local_path(key).open("rb") as stream:
                     return stream.read(max_bytes + 1)
-            with urlopen(Request(self._presign("GET", key, 120), method="GET"), timeout=timeout) as stream:
+            with urlopen(
+                Request(self._presign("GET", key, 120), method="GET"), timeout=timeout
+            ) as stream:
                 return stream.read(max_bytes + 1)
         except HTTPError as exc:
             exc.close()
-            raise HTTPException(status_code=409 if exc.code == 404 else 502, detail="无法读取来源文件") from None
+            raise HTTPException(
+                status_code=409 if exc.code == 404 else 502, detail="无法读取来源文件"
+            ) from None
         except FileNotFoundError:
             raise HTTPException(status_code=409, detail="来源文件不存在") from None
         except (URLError, OSError, IncompleteRead):

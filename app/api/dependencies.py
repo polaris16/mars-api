@@ -1,7 +1,7 @@
 """API 通用依赖，例如从 Bearer Token 解析当前用户。"""
 
-from datetime import datetime, timezone
 import hashlib
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -24,10 +24,12 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
 
     token_hash = hashlib.sha256(credentials.credentials.encode("utf-8")).hexdigest()
-    auth_session = session.scalar(select(AuthSession).where(
-        AuthSession.token_hash == token_hash,
-        AuthSession.is_del.is_(False),
-    ))
+    auth_session = session.scalar(
+        select(AuthSession).where(
+            AuthSession.token_hash == token_hash,
+            AuthSession.is_del.is_(False),
+        )
+    )
     if auth_session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录凭证无效或已过期")
 
@@ -37,7 +39,9 @@ def get_current_user(
     if expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录凭证无效或已过期")
 
-    user = session.scalar(select(User).where(User.id == auth_session.user_id, User.is_del.is_(False)))
+    user = session.scalar(
+        select(User).where(User.id == auth_session.user_id, User.is_del.is_(False))
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用")
     # 回滚结束鉴权阶段的只读事务，让后续 Service 可以显式开启自己的写事务。

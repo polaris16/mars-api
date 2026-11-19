@@ -5,13 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.db.database import get_db
 from app.api.dependencies import CurrentUser
+from app.db.database import get_db
 from app.schemas.interest import InterestResponse, UserInterestsResponse, UserInterestsUpdateRequest
-from app.schemas.user_profile import UserProfileResponse, UserProfileUpdateRequest
 from app.schemas.user import UserResponse
-from app.services.user_service import UserService
+from app.schemas.user_profile import UserProfileResponse, UserProfileUpdateRequest
 from app.services.interest_service import InterestService
+from app.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
 

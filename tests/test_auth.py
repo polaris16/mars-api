@@ -23,7 +23,8 @@ def client() -> Generator[TestClient, None, None]:
     )
     # t_user 使用 PostgreSQL ARRAY 和序列，测试库用 SQLite 等价字段建临时表。
     with engine.begin() as connection:
-        connection.execute(text("""
+        connection.execute(
+            text("""
             CREATE TABLE t_user (
                 id INTEGER PRIMARY KEY,
                 username VARCHAR(20) NOT NULL,
@@ -41,8 +42,10 @@ def client() -> Generator[TestClient, None, None]:
                 is_del BOOLEAN NOT NULL DEFAULT 0,
                 onboarding_completed BOOLEAN NOT NULL DEFAULT 0
             )
-        """))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("""
             CREATE TABLE t_auth_session (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id BIGINT NOT NULL REFERENCES t_user(id) ON DELETE CASCADE,
@@ -54,17 +57,28 @@ def client() -> Generator[TestClient, None, None]:
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_del BOOLEAN NOT NULL DEFAULT 0
             )
-        """))
-        connection.execute(text("CREATE UNIQUE INDEX uk_user_phone ON t_user(phone) WHERE is_del = 0"))
-        connection.execute(text("CREATE UNIQUE INDEX uk_user_username ON t_user(username) WHERE is_del = 0"))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("CREATE UNIQUE INDEX uk_user_phone ON t_user(phone) WHERE is_del = 0")
+        )
+        connection.execute(
+            text("CREATE UNIQUE INDEX uk_user_username ON t_user(username) WHERE is_del = 0")
+        )
+        connection.execute(
+            text("""
             INSERT INTO t_user (id, username, display_name, phone, created_at, updated_at, is_del)
             VALUES (1, 'alice', 'Alice', '13800000000', :now, :now, 0)
-        """), {"now": datetime.now(timezone.utc).isoformat()})
-        connection.execute(text("""
+        """),
+            {"now": datetime.now(timezone.utc).isoformat()},
+        )
+        connection.execute(
+            text("""
             INSERT INTO t_user (id, username, display_name, phone, created_at, updated_at, is_del)
             VALUES (2, 'deleted', 'Deleted', '13900000000', :now, :now, 1)
-        """), {"now": datetime.now(timezone.utc).isoformat()})
+        """),
+            {"now": datetime.now(timezone.utc).isoformat()},
+        )
 
     session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
@@ -85,7 +99,10 @@ def test_send_code_returns_mock_success_without_sending_sms(client: TestClient):
     response = client.post("/api/auth/send-code", json={"phone": "13800000000"})
 
     assert response.status_code == 200
-    assert response.json() == {"message": "验证码已发送", "expires_in": AuthService.code_ttl_seconds}
+    assert response.json() == {
+        "message": "验证码已发送",
+        "expires_in": AuthService.code_ttl_seconds,
+    }
 
 
 def test_send_code_returns_same_success_for_unknown_or_deleted_phone(client: TestClient):
@@ -108,7 +125,9 @@ def test_login_with_fixed_code_returns_bearer_token(client: TestClient):
     assert set(body["user"]) == {"id", "display_name", "avatar_url"}
     assert body["is_new_user"] is False
     assert body["onboarding_completed"] is False
-    assert datetime.fromisoformat(body["expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
+    assert datetime.fromisoformat(body["expires_at"].replace("Z", "+00:00")) > datetime.now(
+        timezone.utc
+    )
 
 
 @pytest.mark.parametrize(
@@ -138,7 +157,9 @@ def test_logout_revokes_token_and_second_logout_fails(client: TestClient):
     token = login_response.json()["access_token"]
 
     logout_response = client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
-    second_logout_response = client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    second_logout_response = client.post(
+        "/api/auth/logout", headers={"Authorization": f"Bearer {token}"}
+    )
 
     assert logout_response.status_code == 200
     assert logout_response.json() == {"message": "已退出登录"}

@@ -2,7 +2,7 @@
 
 分层 FastAPI Web 工程，使用 SQLAlchemy 2.x 和 psycopg 3 同步访问 PostgreSQL，并使用 Alembic 管理表结构迁移。数据库访问配置位于 `app/db/`，业务逻辑和数据库操作由 `app/services/` 负责；Redis 目前仅预留目录，未添加依赖或访问实现。
 
-当前业务、接口和模型见 [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)，工程开发约定与注释规范分别见 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) 和 [COMMENT_GUIDELINES.md](COMMENT_GUIDELINES.md)。下文目录图展示初始工程的核心结构。
+下文目录图展示初始工程的核心结构。当前业务、接口和模型见 [系统设计](SYSTEM_DESIGN.md)，工程约定见 [项目总纲](PROJECT_OVERVIEW.md) 和 [编码规约](CODING_GUIDELINES.md)。
 
 ## 目录结构
 

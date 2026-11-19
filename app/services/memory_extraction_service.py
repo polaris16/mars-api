@@ -14,15 +14,27 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import AIProcessingJob, MediaAsset, MemoryContributor, MemoryElement, MemoryFragment, User
+from app.models import (
+    AIProcessingJob,
+    MediaAsset,
+    MemoryContributor,
+    MemoryElement,
+    MemoryFragment,
+    User,
+)
 from app.schemas.memory_extraction import (
-    ExtractedElement, ExtractionJobPage, ExtractionJobResponse, ExtractionRequest, MemoryElementPage,
-    MemoryElementResponse, MemoryProvenanceResponse, SourceKind,
+    ExtractedElement,
+    ExtractionJobPage,
+    ExtractionJobResponse,
+    ExtractionRequest,
+    MemoryElementPage,
+    MemoryElementResponse,
+    MemoryProvenanceResponse,
+    SourceKind,
 )
 from app.services.memory_service import MemoryService
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError, TextExtractionModel
-
 
 JOB_TYPE = "extract_memory_elements"
 EXTRACTOR_VERSION = "v1"
@@ -100,30 +112,56 @@ class MemoryExtractionService:
         self.memories = MemoryService()
 
     def _model_scope(self) -> str:
-        return _digest("|".join((
-            self.settings.ai_text_provider, self.settings.ai_text_base_url.rstrip("/"), self.settings.ai_text_model,
-        )))
+        return _digest(
+            "|".join(
+                (
+                    self.settings.ai_text_provider,
+                    self.settings.ai_text_base_url.rstrip("/"),
+                    self.settings.ai_text_model,
+                )
+            )
+        )
 
     @staticmethod
     def _source(db: Session, fragment: MemoryFragment) -> Source:
         if fragment.source_type == "text":
             if fragment.content_text and fragment.content_text.strip():
-                return Source("content_text", _digest(fragment.content_text), text=fragment.content_text)
-            asset = db.get(MediaAsset, fragment.source_asset_id) if fragment.source_asset_id is not None else None
-            if (asset is not None and not asset.is_del and asset.media_type == "text"
-                    and asset.upload_status in {"uploaded", "attached"} and asset.content_sha256 and asset.size_bytes):
                 return Source(
-                    "text_file", asset.content_sha256, asset_id=asset.id, key=asset.object_key,
+                    "content_text", _digest(fragment.content_text), text=fragment.content_text
+                )
+            asset = (
+                db.get(MediaAsset, fragment.source_asset_id)
+                if fragment.source_asset_id is not None
+                else None
+            )
+            if (
+                asset is not None
+                and not asset.is_del
+                and asset.media_type == "text"
+                and asset.upload_status in {"uploaded", "attached"}
+                and asset.content_sha256
+                and asset.size_bytes
+            ):
+                return Source(
+                    "text_file",
+                    asset.content_sha256,
+                    asset_id=asset.id,
+                    key=asset.object_key,
                     size_bytes=asset.size_bytes,
                 )
         elif fragment.transcript_raw and fragment.transcript_raw.strip():
-            return Source("transcript_raw", _digest(fragment.transcript_raw), text=fragment.transcript_raw)
+            return Source(
+                "transcript_raw", _digest(fragment.transcript_raw), text=fragment.transcript_raw
+            )
         raise _problem(409, "SOURCE_TEXT_REQUIRED")
 
-    def _read_source(self, source: Source, storage: ObjectStorageService | None, deadline: float) -> str:
+    def _read_source(
+        self, source: Source, storage: ObjectStorageService | None, deadline: float
+    ) -> str:
         if source.text is not None:
             return source.text
         try:
+
             def read(timeout: float) -> bytes:
                 adapter = storage or ObjectStorageService("")
                 return adapter.read_text_source(source.key, source.size_bytes, timeout)
@@ -142,34 +180,62 @@ class MemoryExtractionService:
         return text
 
     def _authorized_source(
-        self, db: Session, requester: User, session_id: int, fragment_id: int, *, lock: bool,
+        self,
+        db: Session,
+        requester: User,
+        session_id: int,
+        fragment_id: int,
+        *,
+        lock: bool,
     ) -> tuple[Source, int]:
         fragment, memory, role = self.memories._fragment_access(
-            db, requester.id, fragment_id, lock=lock, expected_session_id=session_id,
+            db,
+            requester.id,
+            fragment_id,
+            lock=lock,
+            expected_session_id=session_id,
         )
         self.memories._require_material_edit(db, memory, requester, role, fragment.contributor_id)
         provider = db.get(MemoryContributor, fragment.contributor_id)
-        if provider is None or provider.is_del or provider.session_id != session_id or provider.account_user_id is None:
+        if (
+            provider is None
+            or provider.is_del
+            or provider.session_id != session_id
+            or provider.account_user_id is None
+        ):
             raise _problem(403, "SOURCE_PROVIDER_INELIGIBLE")
         if provider.contributor_type != "owner" or provider.account_user_id != memory.owner_user_id:
             author = db.get(User, provider.account_user_id)
-            if (provider.contributor_type != "registered_user" or author is None
-                    or not self.memories.contributors.is_consented_contributor(db, memory, provider, author)):
+            if (
+                provider.contributor_type != "registered_user"
+                or author is None
+                or not self.memories.contributors.is_consented_contributor(
+                    db, memory, provider, author
+                )
+            ):
                 raise _problem(403, "SOURCE_PROVIDER_INELIGIBLE")
         return self._source(db, fragment), provider.account_user_id
 
     @staticmethod
     def _jobs(session_id: int):
         return select(AIProcessingJob).where(
-            AIProcessingJob.session_id == session_id, AIProcessingJob.job_type == JOB_TYPE,
+            AIProcessingJob.session_id == session_id,
+            AIProcessingJob.job_type == JOB_TYPE,
             AIProcessingJob.is_del.is_(False),
         )
 
     def enqueue(
-        self, db: Session, requester: User, session_id: int, fragment_id: int, body: ExtractionRequest,
+        self,
+        db: Session,
+        requester: User,
+        session_id: int,
+        fragment_id: int,
+        body: ExtractionRequest,
     ) -> tuple[int, bool]:
         """Insert the job inside the caller's transaction, serialized by the source session lock."""
-        source, author_id = self._authorized_source(db, requester, session_id, fragment_id, lock=True)
+        source, author_id = self._authorized_source(
+            db, requester, session_id, fragment_id, lock=True
+        )
         query = self._jobs(session_id).where(AIProcessingJob.source_fragment_id == fragment_id)
         jobs = query.order_by(AIProcessingJob.id.desc())
         parent = None
@@ -179,7 +245,9 @@ class MemoryExtractionService:
                 raise _problem(404, "EXTRACTION_JOB_NOT_FOUND")
             if parent.status not in {"failed", "cancelled"}:
                 raise _problem(409, "EXTRACTION_JOB_NOT_RETRYABLE")
-        preferred = db.scalar(jobs.where(AIProcessingJob.status.in_((*ACTIVE_STATUSES, "succeeded"))).limit(1))
+        preferred = db.scalar(
+            jobs.where(AIProcessingJob.status.in_((*ACTIVE_STATUSES, "succeeded"))).limit(1)
+        )
         if preferred is not None:
             return preferred.id, False
         previous = db.scalar(jobs.limit(1))
@@ -189,17 +257,27 @@ class MemoryExtractionService:
                 return previous.id, False
         elif previous is not None:
             return previous.id, False
-        if db.scalar(select(MemoryElement.id).where(
-            MemoryElement.session_id == session_id, MemoryElement.source_fragment_id == fragment_id,
-            MemoryElement.origin == "extracted", MemoryElement.is_del.is_(False),
-        ).limit(1)) is not None:
+        if (
+            db.scalar(
+                select(MemoryElement.id)
+                .where(
+                    MemoryElement.session_id == session_id,
+                    MemoryElement.source_fragment_id == fragment_id,
+                    MemoryElement.origin == "extracted",
+                    MemoryElement.is_del.is_(False),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
             raise _problem(409, "EXTRACTION_RESULT_EXISTS")
 
         if not self.model.available:
             raise _problem(503, "EXTRACTION_UNAVAILABLE")
         limit = self.settings.ai_text_max_input_chars
-        if ((source.text is not None and len(source.text) > limit)
-                or (source.size_bytes is not None and source.size_bytes > limit * 4)):
+        if (source.text is not None and len(source.text) > limit) or (
+            source.size_bytes is not None and source.size_bytes > limit * 4
+        ):
             raise _problem(422, "SOURCE_TEXT_TOO_LONG")
         if body.allow_external_processing and requester.id != author_id:
             raise _problem(403, "SOURCE_AI_AUTHORIZATION_REQUIRED")
@@ -208,7 +286,8 @@ class MemoryExtractionService:
         if self.model.external:
             # 同一原文交给同一模型配置时才可沿用作者的授权。
             already_authorized = (
-                previous is not None and previous.input_payload.get("authorized_source_user_id") == author_id
+                previous is not None
+                and previous.input_payload.get("authorized_source_user_id") == author_id
                 and previous.input_payload.get("model_scope") == model_scope
                 and previous.input_payload.get("source_fingerprint") == source.fingerprint
                 and previous.input_payload.get("source_kind") == source.kind
@@ -219,18 +298,31 @@ class MemoryExtractionService:
             authorized_author = author_id
         now = _now()
         job = AIProcessingJob(
-            session_id=session_id, source_fragment_id=fragment_id, requested_by_user_id=requester.id,
-            job_type=JOB_TYPE, status="queued", attempt_count=0, max_attempts=self.settings.ai_text_max_attempts,
+            session_id=session_id,
+            source_fragment_id=fragment_id,
+            requested_by_user_id=requester.id,
+            job_type=JOB_TYPE,
+            status="queued",
+            attempt_count=0,
+            max_attempts=self.settings.ai_text_max_attempts,
             # Give the request its first attempt before an independent worker claims the task.
             available_at=now + timedelta(seconds=self.settings.ai_text_sync_wait_seconds),
-            idempotency_key=_digest(f"{fragment_id}:{source.kind}:{source.fingerprint}:{EXTRACTOR_VERSION}:{body.retry_of_job_id}"),
+            idempotency_key=_digest(
+                f"{fragment_id}:{source.kind}:{source.fingerprint}:{EXTRACTOR_VERSION}:{body.retry_of_job_id}"
+            ),
             input_payload={
-                "source_kind": source.kind, "source_asset_id": source.asset_id,
-                "source_fingerprint": source.fingerprint, "extractor_version": EXTRACTOR_VERSION,
-                "retry_of_job_id": body.retry_of_job_id, "model_scope": model_scope,
+                "source_kind": source.kind,
+                "source_asset_id": source.asset_id,
+                "source_fingerprint": source.fingerprint,
+                "extractor_version": EXTRACTOR_VERSION,
+                "retry_of_job_id": body.retry_of_job_id,
+                "model_scope": model_scope,
                 "authorized_source_user_id": authorized_author,
             },
-            created_by=requester.id, updated_by=requester.id, created_at=now, updated_at=now,
+            created_by=requester.id,
+            updated_by=requester.id,
+            created_at=now,
+            updated_at=now,
         )
         db.add(job)
         db.flush()
@@ -241,19 +333,32 @@ class MemoryExtractionService:
         with db.begin():
             claimable = or_(
                 and_(AIProcessingJob.status == "queued", AIProcessingJob.available_at <= now),
-                and_(AIProcessingJob.status == "processing", AIProcessingJob.lease_expires_at <= now),
+                and_(
+                    AIProcessingJob.status == "processing", AIProcessingJob.lease_expires_at <= now
+                ),
             )
             if job_id is not None:
                 # Only the request that created the job can bypass its initial scheduling delay.
-                claimable = and_(AIProcessingJob.status == "queued", AIProcessingJob.attempt_count == 0)
+                claimable = and_(
+                    AIProcessingJob.status == "queued", AIProcessingJob.attempt_count == 0
+                )
             query = select(AIProcessingJob).where(
-                AIProcessingJob.job_type == JOB_TYPE, AIProcessingJob.is_del.is_(False), claimable,
+                AIProcessingJob.job_type == JOB_TYPE,
+                AIProcessingJob.is_del.is_(False),
+                claimable,
             )
             if job_id is not None:
                 query = query.where(AIProcessingJob.id == job_id)
-            job = db.scalar(query.order_by(
-                AIProcessingJob.priority.desc(), AIProcessingJob.available_at, AIProcessingJob.id,
-            ).limit(1).with_for_update(skip_locked=True).execution_options(populate_existing=True))
+            job = db.scalar(
+                query.order_by(
+                    AIProcessingJob.priority.desc(),
+                    AIProcessingJob.available_at,
+                    AIProcessingJob.id,
+                )
+                .limit(1)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            )
             if job is None:
                 return None
             exhausted = job.attempt_count >= job.max_attempts
@@ -269,30 +374,45 @@ class MemoryExtractionService:
             job.worker_id = token
             job.started_at = job.started_at or now
             job.lease_expires_at = now + timedelta(
-                seconds=max(self.settings.ai_text_timeout_seconds, self.settings.ai_text_sync_wait_seconds) + 15,
+                seconds=max(
+                    self.settings.ai_text_timeout_seconds, self.settings.ai_text_sync_wait_seconds
+                )
+                + 15,
             )
             job.updated_at = now
             return Claim(job.id, token, exhausted)
 
     def _recheck(self, db: Session, job: AIProcessingJob, *, lock: bool) -> Source:
-        actor = db.scalar(select(User).where(
-            User.id == job.requested_by_user_id, User.is_del.is_(False),
-        ))
+        actor = db.scalar(
+            select(User).where(
+                User.id == job.requested_by_user_id,
+                User.is_del.is_(False),
+            )
+        )
         if actor is None or job.source_fragment_id is None:
             raise ExtractionError("SOURCE_ACCESS_LOST")
         try:
             source, author_id = self._authorized_source(
-                db, actor, job.session_id, job.source_fragment_id, lock=lock,
+                db,
+                actor,
+                job.session_id,
+                job.source_fragment_id,
+                lock=lock,
             )
         except HTTPException:
             raise ExtractionError("SOURCE_ACCESS_LOST") from None
         payload = job.input_payload
         if (source.kind, source.asset_id, source.fingerprint) != (
-            payload.get("source_kind"), payload.get("source_asset_id"), payload.get("source_fingerprint"),
+            payload.get("source_kind"),
+            payload.get("source_asset_id"),
+            payload.get("source_fingerprint"),
         ):
             raise ExtractionError("SOURCE_CHANGED")
-        if (not self.model.available or payload.get("model_scope") != self._model_scope()
-                or payload.get("extractor_version") != EXTRACTOR_VERSION):
+        if (
+            not self.model.available
+            or payload.get("model_scope") != self._model_scope()
+            or payload.get("extractor_version") != EXTRACTOR_VERSION
+        ):
             raise ExtractionError("MODEL_CONFIGURATION_CHANGED")
         if self.model.external and payload.get("authorized_source_user_id") != author_id:
             raise ExtractionError("SOURCE_AI_AUTHORIZATION_REQUIRED")
@@ -300,7 +420,8 @@ class MemoryExtractionService:
 
     @staticmethod
     def _verify_elements(
-        extracted: list[ExtractedElement], source_text: str,
+        extracted: list[ExtractedElement],
+        source_text: str,
     ) -> list[tuple[ExtractedElement, int | None]]:
         verified = []
         seen = set()
@@ -318,10 +439,14 @@ class MemoryExtractionService:
         return verified
 
     def _store_elements(
-        self, db: Session, job: AIProcessingJob, verified: list[tuple[ExtractedElement, int | None]],
+        self,
+        db: Session,
+        job: AIProcessingJob,
+        verified: list[tuple[ExtractedElement, int | None]],
     ) -> dict:
         active = select(MemoryElement).where(
-            MemoryElement.source_fragment_id == job.source_fragment_id, MemoryElement.is_del.is_(False),
+            MemoryElement.source_fragment_id == job.source_fragment_id,
+            MemoryElement.is_del.is_(False),
         )
         current = list(db.scalars(active.order_by(MemoryElement.sequence_no)))
         extracted = [row for row in current if row.origin == "extracted"]
@@ -339,33 +464,52 @@ class MemoryExtractionService:
         rows = []
         for sequence, (result, start) in enumerate(verified, start=1):
             row = MemoryElement(
-                **result.model_dump(), session_id=job.session_id, source_fragment_id=job.source_fragment_id,
-                processing_job_id=job.id, sequence_no=sequence, origin="extracted", review_status="pending",
-                created_by=job.requested_by_user_id, updated_by=job.requested_by_user_id,
+                **result.model_dump(),
+                session_id=job.session_id,
+                source_fragment_id=job.source_fragment_id,
+                processing_job_id=job.id,
+                sequence_no=sequence,
+                origin="extracted",
+                review_status="pending",
+                created_by=job.requested_by_user_id,
+                updated_by=job.requested_by_user_id,
             )
             db.add(row)
             rows.append((row, start))
         db.flush()
         for row, start in rows:
             evidence[str(row.id)] = {
-                "start_offset": start, "end_offset": start + len(row.source_quote) if start is not None else None,
+                "start_offset": start,
+                "end_offset": start + len(row.source_quote) if start is not None else None,
             }
         return {"element_count": len(rows), "evidence": evidence}
 
     @staticmethod
     def _fallback(db: Session, job: AIProcessingJob, source_text: str) -> int | None:
-        rows = list(db.scalars(select(MemoryElement).where(
-            MemoryElement.source_fragment_id == job.source_fragment_id, MemoryElement.is_del.is_(False),
-        )))
+        rows = list(
+            db.scalars(
+                select(MemoryElement).where(
+                    MemoryElement.source_fragment_id == job.source_fragment_id,
+                    MemoryElement.is_del.is_(False),
+                )
+            )
+        )
         if any(row.origin == "extracted" for row in rows):
             return None
         existing = next((row for row in rows if row.origin == "fallback"), None)
         if existing is not None:
             return existing.id
         fallback = MemoryElement(
-            session_id=job.session_id, source_fragment_id=job.source_fragment_id, processing_job_id=job.id,
-            sequence_no=1, origin="fallback", element_type="other", review_status="pending",
-            summary=source_text.strip()[:160], attribute_confidence={}, created_by=job.requested_by_user_id,
+            session_id=job.session_id,
+            source_fragment_id=job.source_fragment_id,
+            processing_job_id=job.id,
+            sequence_no=1,
+            origin="fallback",
+            element_type="other",
+            review_status="pending",
+            summary=source_text.strip()[:160],
+            attribute_confidence={},
+            created_by=job.requested_by_user_id,
             updated_by=job.requested_by_user_id,
         )
         db.add(fallback)
@@ -373,16 +517,27 @@ class MemoryExtractionService:
         return fallback.id
 
     def _complete(
-        self, db: Session, claim: Claim, text: str | None,
-        verified: list[tuple[ExtractedElement, int | None]], error: ExtractionError | None,
+        self,
+        db: Session,
+        claim: Claim,
+        text: str | None,
+        verified: list[tuple[ExtractedElement, int | None]],
+        error: ExtractionError | None,
     ) -> None:
         with db.begin():
             now = _now()
-            job = db.scalar(select(AIProcessingJob).where(
-                AIProcessingJob.id == claim.job_id, AIProcessingJob.status == "processing",
-                AIProcessingJob.worker_id == claim.token, AIProcessingJob.lease_expires_at > now,
-                AIProcessingJob.is_del.is_(False),
-            ).with_for_update().execution_options(populate_existing=True))
+            job = db.scalar(
+                select(AIProcessingJob)
+                .where(
+                    AIProcessingJob.id == claim.job_id,
+                    AIProcessingJob.status == "processing",
+                    AIProcessingJob.worker_id == claim.token,
+                    AIProcessingJob.lease_expires_at > now,
+                    AIProcessingJob.is_del.is_(False),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
             if job is None:
                 return
             cancelled = False
@@ -410,10 +565,16 @@ class MemoryExtractionService:
                     job.status = "cancelled"
                 elif error.retryable and job.attempt_count < job.max_attempts:
                     job.status = "queued"
-                    job.available_at = now + timedelta(seconds=min(60, 5 * 2 ** (job.attempt_count - 1)))
+                    job.available_at = now + timedelta(
+                        seconds=min(60, 5 * 2 ** (job.attempt_count - 1))
+                    )
                 else:
                     job.status = "failed"
-                    if text and text.strip() and error.code not in {"SOURCE_TEXT_TOO_LONG", "SOURCE_TEXT_REQUIRED"}:
+                    if (
+                        text
+                        and text.strip()
+                        and error.code not in {"SOURCE_TEXT_TOO_LONG", "SOURCE_TEXT_REQUIRED"}
+                    ):
                         result["fallback_element_id"] = self._fallback(db, job, text)
             job.result_payload = result
             job.error_message = None
@@ -424,17 +585,27 @@ class MemoryExtractionService:
 
     @staticmethod
     def _claimed_job(db: Session, claim: Claim) -> AIProcessingJob:
-        job = db.scalar(select(AIProcessingJob).where(
-            AIProcessingJob.id == claim.job_id, AIProcessingJob.status == "processing",
-            AIProcessingJob.worker_id == claim.token, AIProcessingJob.lease_expires_at > _now(),
-            AIProcessingJob.is_del.is_(False),
-        ).execution_options(populate_existing=True))
+        job = db.scalar(
+            select(AIProcessingJob)
+            .where(
+                AIProcessingJob.id == claim.job_id,
+                AIProcessingJob.status == "processing",
+                AIProcessingJob.worker_id == claim.token,
+                AIProcessingJob.lease_expires_at > _now(),
+                AIProcessingJob.is_del.is_(False),
+            )
+            .execution_options(populate_existing=True)
+        )
         if job is None:
             raise ExtractionError("WORKER_LEASE_EXPIRED")
         return job
 
     def run(
-        self, db: Session, *, job_id: int | None = None, storage: ObjectStorageService | None = None,
+        self,
+        db: Session,
+        *,
+        job_id: int | None = None,
+        storage: ObjectStorageService | None = None,
     ) -> bool:
         """Run one job. Passing an ID is reserved for the request starting its first attempt."""
         claim = self._claim(db, job_id)
@@ -463,7 +634,9 @@ class MemoryExtractionService:
                 with db.begin():
                     self._recheck(db, self._claimed_job(db, claim), lock=False)
             extracted = _bounded_io(
-                lambda timeout: self.model.extract(text, timeout), deadline, "MODEL_TIMEOUT",
+                lambda timeout: self.model.extract(text, timeout),
+                deadline,
+                "MODEL_TIMEOUT",
             )
             verified = self._verify_elements(extracted, text)
         except ExtractionError as exc:
@@ -476,112 +649,195 @@ class MemoryExtractionService:
         result = job.result_payload or {}
         fallback_id = result.get("fallback_element_id")
         if fallback_id is not None:
-            fallback_id = db.scalar(select(MemoryElement.id).where(
-                MemoryElement.id == fallback_id, MemoryElement.session_id == job.session_id,
-                MemoryElement.source_fragment_id == job.source_fragment_id, MemoryElement.origin == "fallback",
-                MemoryElement.is_del.is_(False),
-            ))
+            fallback_id = db.scalar(
+                select(MemoryElement.id).where(
+                    MemoryElement.id == fallback_id,
+                    MemoryElement.session_id == job.session_id,
+                    MemoryElement.source_fragment_id == job.source_fragment_id,
+                    MemoryElement.origin == "fallback",
+                    MemoryElement.is_del.is_(False),
+                )
+            )
         return ExtractionJobResponse(
-            id=job.id, session_id=job.session_id, source_fragment_id=job.source_fragment_id, status=job.status,
-            attempt_count=job.attempt_count, max_attempts=job.max_attempts, created_at=_utc(job.created_at),
-            started_at=_utc(job.started_at), finished_at=_utc(job.finished_at),
-            next_retry_at=_utc(job.available_at) if job.status == "queued" and job.attempt_count else None,
+            id=job.id,
+            session_id=job.session_id,
+            source_fragment_id=job.source_fragment_id,
+            status=job.status,
+            attempt_count=job.attempt_count,
+            max_attempts=job.max_attempts,
+            created_at=_utc(job.created_at),
+            started_at=_utc(job.started_at),
+            finished_at=_utc(job.finished_at),
+            next_retry_at=_utc(job.available_at)
+            if job.status == "queued" and job.attempt_count
+            else None,
             element_count=result.get("element_count") if job.status == "succeeded" else None,
-            error_code=job.error_code, retry_of_job_id=job.input_payload.get("retry_of_job_id"),
+            error_code=job.error_code,
+            retry_of_job_id=job.input_payload.get("retry_of_job_id"),
             fallback_element_id=fallback_id,
         )
 
-    def get_job(self, db: Session, user: User, session_id: int, job_id: int) -> ExtractionJobResponse:
+    def get_job(
+        self, db: Session, user: User, session_id: int, job_id: int
+    ) -> ExtractionJobResponse:
         self.memories._session_access(db, user.id, session_id)
-        job = db.scalar(self._jobs(session_id).join(
-            MemoryFragment, MemoryFragment.id == AIProcessingJob.source_fragment_id,
-        ).where(
-            AIProcessingJob.id == job_id, MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False),
-        ).execution_options(populate_existing=True))
+        job = db.scalar(
+            self._jobs(session_id)
+            .join(
+                MemoryFragment,
+                MemoryFragment.id == AIProcessingJob.source_fragment_id,
+            )
+            .where(
+                AIProcessingJob.id == job_id,
+                MemoryFragment.session_id == session_id,
+                MemoryFragment.is_del.is_(False),
+            )
+            .execution_options(populate_existing=True)
+        )
         if job is None:
             raise _problem(404, "EXTRACTION_JOB_NOT_FOUND")
         return self._job_response(db, job)
 
     def list_jobs(
-        self, db: Session, user: User, session_id: int, fragment_id: int, page: int, page_size: int,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        fragment_id: int,
+        page: int,
+        page_size: int,
     ) -> ExtractionJobPage:
         self.memories._fragment_access(db, user.id, fragment_id, expected_session_id=session_id)
         query = self._jobs(session_id).where(AIProcessingJob.source_fragment_id == fragment_id)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        rows = db.scalars(query.order_by(AIProcessingJob.created_at.desc(), AIProcessingJob.id.desc())
-                          .offset((page - 1) * page_size).limit(page_size))
+        rows = db.scalars(
+            query.order_by(AIProcessingJob.created_at.desc(), AIProcessingJob.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
         return ExtractionJobPage(
-            items=[self._job_response(db, row) for row in rows], page=page, page_size=page_size, total=total,
+            items=[self._job_response(db, row) for row in rows],
+            page=page,
+            page_size=page_size,
+            total=total,
         )
 
     @staticmethod
     def _elements(session_id: int):
-        return select(MemoryElement).join(
-            MemoryFragment, MemoryFragment.id == MemoryElement.source_fragment_id,
-        ).where(
-            MemoryElement.session_id == session_id, MemoryElement.is_del.is_(False),
-            MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False),
+        return (
+            select(MemoryElement)
+            .join(
+                MemoryFragment,
+                MemoryFragment.id == MemoryElement.source_fragment_id,
+            )
+            .where(
+                MemoryElement.session_id == session_id,
+                MemoryElement.is_del.is_(False),
+                MemoryFragment.session_id == session_id,
+                MemoryFragment.is_del.is_(False),
+            )
         )
 
     def list_elements(
-        self, db: Session, user: User, session_id: int, page: int, page_size: int, *,
-        source_fragment_id: int | None = None, processing_job_id: int | None = None,
-        element_type: str | None = None, review_status: str | None = None, origin: str | None = None,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        page: int,
+        page_size: int,
+        *,
+        source_fragment_id: int | None = None,
+        processing_job_id: int | None = None,
+        element_type: str | None = None,
+        review_status: str | None = None,
+        origin: str | None = None,
     ) -> MemoryElementPage:
         self.memories._session_access(db, user.id, session_id)
         query = self._elements(session_id)
         for column, value in (
-            (MemoryElement.source_fragment_id, source_fragment_id), (MemoryElement.processing_job_id, processing_job_id),
-            (MemoryElement.element_type, element_type), (MemoryElement.review_status, review_status),
+            (MemoryElement.source_fragment_id, source_fragment_id),
+            (MemoryElement.processing_job_id, processing_job_id),
+            (MemoryElement.element_type, element_type),
+            (MemoryElement.review_status, review_status),
             (MemoryElement.origin, origin),
         ):
             if value is not None:
                 query = query.where(column == value)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        rows = db.scalars(query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size))
+        rows = db.scalars(
+            query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size)
+        )
         return MemoryElementPage(
             items=[MemoryElementResponse.model_validate(row) for row in rows],
-            page=page, page_size=page_size, total=total,
+            page=page,
+            page_size=page_size,
+            total=total,
         )
 
-    def _element(self, db: Session, user_id: int, session_id: int, element_id: int) -> MemoryElement:
+    def _element(
+        self, db: Session, user_id: int, session_id: int, element_id: int
+    ) -> MemoryElement:
         self.memories._session_access(db, user_id, session_id)
         row = db.scalar(self._elements(session_id).where(MemoryElement.id == element_id))
         if row is None:
             raise _problem(404, "MEMORY_ELEMENT_NOT_FOUND")
         return row
 
-    def get_element(self, db: Session, user: User, session_id: int, element_id: int) -> MemoryElementResponse:
-        return MemoryElementResponse.model_validate(self._element(db, user.id, session_id, element_id))
+    def get_element(
+        self, db: Session, user: User, session_id: int, element_id: int
+    ) -> MemoryElementResponse:
+        return MemoryElementResponse.model_validate(
+            self._element(db, user.id, session_id, element_id)
+        )
 
     def get_provenance(
-        self, db: Session, user: User, session_id: int, element_id: int,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        element_id: int,
     ) -> MemoryProvenanceResponse:
         user_id = user.id
         row = self._element(db, user_id, session_id, element_id)
-        job = db.scalar(self._jobs(session_id).where(
-            AIProcessingJob.id == row.processing_job_id, AIProcessingJob.source_fragment_id == row.source_fragment_id,
-        ))
+        job = db.scalar(
+            self._jobs(session_id).where(
+                AIProcessingJob.id == row.processing_job_id,
+                AIProcessingJob.source_fragment_id == row.source_fragment_id,
+            )
+        )
         payload = job.input_payload if job is not None else {}
-        evidence = (job.result_payload or {}).get("evidence", {}).get(str(row.id), {}) if job else {}
+        evidence = (
+            (job.result_payload or {}).get("evidence", {}).get(str(row.id), {}) if job else {}
+        )
         response = MemoryProvenanceResponse(
-            element_id=row.id, source_fragment_id=row.source_fragment_id, processing_job_id=row.processing_job_id,
-            source_kind=payload.get("source_kind"), source_asset_id=payload.get("source_asset_id"),
-            source_quote=row.source_quote, start_offset=evidence.get("start_offset"), end_offset=evidence.get("end_offset"),
+            element_id=row.id,
+            source_fragment_id=row.source_fragment_id,
+            processing_job_id=row.processing_job_id,
+            source_kind=payload.get("source_kind"),
+            source_asset_id=payload.get("source_asset_id"),
+            source_quote=row.source_quote,
+            start_offset=evidence.get("start_offset"),
+            end_offset=evidence.get("end_offset"),
         )
         if row.origin == "fallback":
             source = self._source(db, db.get(MemoryFragment, row.source_fragment_id))
             if (source.kind, source.asset_id, source.fingerprint) != (
-                payload.get("source_kind"), payload.get("source_asset_id"), payload.get("source_fingerprint"),
+                payload.get("source_kind"),
+                payload.get("source_asset_id"),
+                payload.get("source_fingerprint"),
             ):
                 raise _problem(409, "SOURCE_CHANGED")
             db.rollback()
             try:
-                text = self._read_source(source, None, monotonic() + self.settings.ai_text_timeout_seconds)
+                text = self._read_source(
+                    source, None, monotonic() + self.settings.ai_text_timeout_seconds
+                )
             except ExtractionError as exc:
                 raise _problem(503 if exc.retryable else 409, exc.code) from None
             self._element(db, user_id, session_id, element_id)
-            response = response.model_copy(update={"source_text": text, "start_offset": 0, "end_offset": len(text)})
+            response = response.model_copy(
+                update={"source_text": text, "start_offset": 0, "end_offset": len(text)}
+            )
         return response
 
 

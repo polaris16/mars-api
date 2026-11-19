@@ -32,20 +32,33 @@ class MemoryContributorService:
         )
 
     def _eligible_member(
-        self, db: Session, memory: MemorySession, user_id: int, now: datetime,
+        self,
+        db: Session,
+        memory: MemorySession,
+        user_id: int,
+        now: datetime,
     ) -> MemorySessionMember | None:
-        member = db.scalar(select(MemorySessionMember).where(
-            MemorySessionMember.session_id == memory.id,
-            MemorySessionMember.user_id == user_id,
-            MemorySessionMember.role.in_(("contributor", "editor")),
-            MemorySessionMember.is_del.is_(False),
-        ))
-        if member is not None and self.members.is_member_effective(db, memory.owner_user_id, member, now):
+        member = db.scalar(
+            select(MemorySessionMember).where(
+                MemorySessionMember.session_id == memory.id,
+                MemorySessionMember.user_id == user_id,
+                MemorySessionMember.role.in_(("contributor", "editor")),
+                MemorySessionMember.is_del.is_(False),
+            )
+        )
+        if member is not None and self.members.is_member_effective(
+            db, memory.owner_user_id, member, now
+        ):
             return member
         return None
 
     def _is_eligible(
-        self, db: Session, memory: MemorySession, row: MemoryContributor, account: User, now: datetime,
+        self,
+        db: Session,
+        memory: MemorySession,
+        row: MemoryContributor,
+        account: User,
+        now: datetime,
     ) -> bool:
         if account.is_del or row.identity_status != "verified":
             return False
@@ -59,16 +72,25 @@ class MemoryContributorService:
         )
 
     def is_consented_contributor(
-        self, db: Session, memory: MemorySession, row: MemoryContributor, user: User,
+        self,
+        db: Session,
+        memory: MemorySession,
+        row: MemoryContributor,
+        user: User,
     ) -> bool:
         return (
-            row.session_id == memory.id and row.account_user_id == user.id
-            and not row.is_del and row.consent_status == "accepted"
+            row.session_id == memory.id
+            and row.account_user_id == user.id
+            and not row.is_del
+            and row.consent_status == "accepted"
             and self._is_eligible(db, memory, row, user, datetime.now(timezone.utc))
         )
 
     def require_consented_contributor(
-        self, db: Session, memory: MemorySession, user: User,
+        self,
+        db: Session,
+        memory: MemorySession,
+        user: User,
     ) -> MemoryContributor:
         row = self._find(db, memory.id, user.id)
         if row is None or not self.is_consented_contributor(db, memory, row, user):
@@ -81,35 +103,56 @@ class MemoryContributorService:
         return account.display_name or ("会话主人" if contributor_type == "owner" else "亲属")
 
     def _response(
-        self, db: Session, memory: MemorySession, row: MemoryContributor, account: User, now: datetime,
+        self,
+        db: Session,
+        memory: MemorySession,
+        row: MemoryContributor,
+        account: User,
+        now: datetime,
     ) -> ContributorResponse:
         response = ContributorResponse.model_validate(row)
         consented_at = row.consented_at
         if consented_at is not None:
-            consented_at = consented_at.replace(tzinfo=timezone.utc) if consented_at.tzinfo is None else consented_at.astimezone(timezone.utc)
-        return response.model_copy(update={
-            "display_name": self._display_name(account, row.contributor_type),
-            "consented_at": consented_at,
-            "is_eligible": self._is_eligible(db, memory, row, account, now),
-        })
+            consented_at = (
+                consented_at.replace(tzinfo=timezone.utc)
+                if consented_at.tzinfo is None
+                else consented_at.astimezone(timezone.utc)
+            )
+        return response.model_copy(
+            update={
+                "display_name": self._display_name(account, row.contributor_type),
+                "consented_at": consented_at,
+                "is_eligible": self._is_eligible(db, memory, row, account, now),
+            }
+        )
 
-    def list_contributors(self, db: Session, user: User, session_id: int, page: int, page_size: int) -> ContributorPage:
+    def list_contributors(
+        self, db: Session, user: User, session_id: int, page: int, page_size: int
+    ) -> ContributorPage:
         memory, _ = self.members.require_manager(db, session_id, user.id, lock=False)
         query = self._records(session_id)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
         rows = db.execute(
-            query.join(User, User.id == MemoryContributor.account_user_id).add_columns(User)
+            query.join(User, User.id == MemoryContributor.account_user_id)
+            .add_columns(User)
             .order_by(MemoryContributor.id)
-            .offset((page - 1) * page_size).limit(page_size)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         ).all()
         now = datetime.now(timezone.utc)
         return ContributorPage(
             items=[self._response(db, memory, row, account, now) for row, account in rows],
-            page=page, page_size=page_size, total=total,
+            page=page,
+            page_size=page_size,
+            total=total,
         )
 
     def register(
-        self, db: Session, user: User, session_id: int, target_id: int,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        target_id: int,
     ) -> tuple[ContributorResponse, bool]:
         with db.begin():
             actor_id = user.id
@@ -121,7 +164,9 @@ class MemoryContributorService:
             owner = target_id == memory.owner_user_id
             member = None if owner else self._eligible_member(db, memory, target_id, now)
             if not owner and member is None:
-                raise HTTPException(status_code=422, detail="提供者需要有效的亲属关系和会话贡献授权")
+                raise HTTPException(
+                    status_code=422, detail="提供者需要有效的亲属关系和会话贡献授权"
+                )
 
             contributor_type = "owner" if owner else "registered_user"
             member_id = member.id if member is not None else None
@@ -129,10 +174,18 @@ class MemoryContributorService:
             row = self._find(db, session_id, target_id)
             created = row is None
             if row is None:
-                row = MemoryContributor(session_id=session_id, account_user_id=target_id, created_by=actor_id)
+                row = MemoryContributor(
+                    session_id=session_id, account_user_id=target_id, created_by=actor_id
+                )
                 db.add(row)
-            binding_changed = (row.contributor_type, row.session_member_id, row.relationship_id) != (
-                contributor_type, member_id, relationship_id,
+            binding_changed = (
+                row.contributor_type,
+                row.session_member_id,
+                row.relationship_id,
+            ) != (
+                contributor_type,
+                member_id,
+                relationship_id,
             )
             if created or binding_changed:
                 row.contributor_type = contributor_type
@@ -155,7 +208,12 @@ class MemoryContributorService:
         return self._response(db, memory, row, user, datetime.now(timezone.utc))
 
     def set_my_consent(
-        self, db: Session, user: User, session_id: int, contributor_id: int, status: str,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        contributor_id: int,
+        status: str,
     ) -> ContributorResponse:
         with db.begin():
             actor_id = user.id

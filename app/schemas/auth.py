@@ -5,7 +5,6 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
-
 class LoginUserResponse(BaseModel):
     """登录成功后返回给客户端的最小用户展示信息。"""
 
@@ -18,7 +17,6 @@ class LoginUserResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-
     phone: str = Field(min_length=1, max_length=20)
     # 开发阶段使用固定验证码，正式接短信后沿用此字段。
     code: str = Field(min_length=6, max_length=6)

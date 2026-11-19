@@ -14,15 +14,22 @@ from app.core.config import get_settings
 from app.db.database import get_db
 from app.main import app
 from app.models import (
-    FragmentAttachment, MediaAsset, MemoryContributor, MemoryFragment, MemorySession,
-    MemorySessionMember, Topic,
+    FragmentAttachment,
+    MediaAsset,
+    MemoryContributor,
+    MemoryFragment,
+    MemorySession,
+    MemorySessionMember,
+    Topic,
 )
 from app.services import user_relationship_service
 
 
 @pytest.mark.parametrize("accept_before_expiry", [False, True])
 def test_expired_relationship_is_listed_as_expired_and_can_be_reinvited(
-    client, monkeypatch, accept_before_expiry,
+    client,
+    monkeypatch,
+    accept_before_expiry,
 ):
     class Clock(datetime):
         current = datetime(2026, 11, 19, 12, tzinfo=timezone.utc)
@@ -41,7 +48,9 @@ def test_expired_relationship_is_listed_as_expired_and_can_be_reinvited(
         "relation_code": "sibling_of",
     }
     expiry = Clock.current + timedelta(hours=1)
-    invitation = client.post(url, headers=alice, json={**payload, "valid_until": expiry.isoformat()})
+    invitation = client.post(
+        url, headers=alice, json={**payload, "valid_until": expiry.isoformat()}
+    )
     assert invitation.status_code == 201, invitation.text
     action_url = f"{url}/{invitation.json()['id']}"
     if accept_before_expiry:
@@ -78,7 +87,9 @@ def test_invitation_expiry_is_independent_from_confirmed_relationship(client, mo
 
     second = client.post(RELATIONSHIPS, headers=alice, json=payload)
     assert second.status_code == 201
-    assert client.post(f"{RELATIONSHIPS}/{second.json()['id']}/accept", headers=bob).status_code == 200
+    assert (
+        client.post(f"{RELATIONSHIPS}/{second.json()['id']}/accept", headers=bob).status_code == 200
+    )
     Clock.current += timedelta(days=30)
     assert client.get(RELATIONSHIPS, headers=alice).json()["items"][0]["status"] == "active"
 
@@ -93,12 +104,19 @@ def test_only_initiator_can_withdraw_pending_invitation_and_send_correction(clie
     revoked = client.post(revoke_url, headers=alice)
     assert revoked.status_code == 200 and revoked.json()[0]["status"] == "revoked"
     assert client.post(f"{RELATIONSHIPS}/{invite['id']}/accept", headers=bob).status_code == 409
-    assert client.post(RELATIONSHIPS, headers=alice, json={**payload, "relation_code": "parent_of"}).status_code == 201
+    assert (
+        client.post(
+            RELATIONSHIPS, headers=alice, json={**payload, "relation_code": "parent_of"}
+        ).status_code
+        == 201
+    )
 
 
 @pytest.fixture
 def client(monkeypatch) -> Generator[TestClient, None, None]:
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
 
     @event.listens_for(engine, "connect")
     def add_btrim(connection, _):
@@ -106,7 +124,8 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
 
     now = datetime.now(timezone.utc).isoformat()
     with engine.begin() as connection:
-        connection.execute(text("""
+        connection.execute(
+            text("""
             CREATE TABLE t_user (
                 id INTEGER PRIMARY KEY, username VARCHAR(20) NOT NULL, display_name VARCHAR(100),
                 avatar_url VARCHAR(500), phone VARCHAR(20) NOT NULL, sex SMALLINT DEFAULT 0,
@@ -115,8 +134,10 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_del BOOLEAN NOT NULL DEFAULT 0, onboarding_completed BOOLEAN NOT NULL DEFAULT 0
             )
-        """))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("""
             CREATE TABLE t_auth_session (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id BIGINT NOT NULL,
                 token_hash VARCHAR(64) NOT NULL UNIQUE, expires_at TIMESTAMP NOT NULL,
@@ -124,8 +145,10 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
                 updated_by BIGINT, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_del BOOLEAN NOT NULL DEFAULT 0
             )
-        """))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("""
             CREATE TABLE t_user_relationship (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, relationship_pair_id CHAR(32) NOT NULL,
                 subject_user_id BIGINT NOT NULL, related_user_id BIGINT NOT NULL,
@@ -139,23 +162,46 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, is_del BOOLEAN NOT NULL DEFAULT 0,
                 UNIQUE (relationship_pair_id, subject_user_id)
             )
-        """))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("""
             INSERT INTO t_user (id, username, display_name, phone, created_at, updated_at, is_del)
             VALUES (1, 'alice', 'Alice', '13800000001', :now, :now, 0),
                    (2, 'bob', 'Bob', '13800000002', :now, :now, 0),
                    (3, 'carol', 'Carol', '13800000003', :now, :now, 0)
-        """), {"now": now})
-        for model in (MemorySessionMember, MemoryContributor, MemoryFragment, MediaAsset, FragmentAttachment):
+        """),
+            {"now": now},
+        )
+        for model in (
+            MemorySessionMember,
+            MemoryContributor,
+            MemoryFragment,
+            MediaAsset,
+            FragmentAttachment,
+        ):
             column = model.__table__.c.id
             monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
-        MemorySession.metadata.create_all(connection, tables=[
-            model.__table__ for model in (
-                MemorySession, MemorySessionMember, MemoryContributor, MemoryFragment,
-                MediaAsset, FragmentAttachment, Topic,
+        MemorySession.metadata.create_all(
+            connection,
+            tables=[
+                model.__table__
+                for model in (
+                    MemorySession,
+                    MemorySessionMember,
+                    MemoryContributor,
+                    MemoryFragment,
+                    MediaAsset,
+                    FragmentAttachment,
+                    Topic,
+                )
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1), (13, 2)"
             )
-        ])
-        connection.execute(text("INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1), (13, 2)"))
+        )
 
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
@@ -184,9 +230,15 @@ RELATIONSHIPS = "/api/users/me/relationships"
 
 
 def confirm_relationship(client, initiator, invitee, *, user_id, kind, code):
-    invited = client.post(RELATIONSHIPS, headers=initiator, json={
-        "related_user_id": user_id, "relationship_type": kind, "relation_code": code,
-    })
+    invited = client.post(
+        RELATIONSHIPS,
+        headers=initiator,
+        json={
+            "related_user_id": user_id,
+            "relationship_type": kind,
+            "relation_code": code,
+        },
+    )
     assert invited.status_code == 201, invited.text
     relation_id = invited.json()["id"]
     accepted = client.post(f"{RELATIONSHIPS}/{relation_id}/accept", headers=invitee)
@@ -195,10 +247,18 @@ def confirm_relationship(client, initiator, invitee, *, user_id, kind, code):
 
 
 def register_material_contributor(client, owner, relative, role):
-    relation_id = confirm_relationship(client, owner, relative, user_id=2, kind="family", code="sibling_of")
-    authorized = client.post(MEMBERS, headers=owner, json={
-        "user_id": 2, "role": role, "source_relationship_id": relation_id,
-    })
+    relation_id = confirm_relationship(
+        client, owner, relative, user_id=2, kind="family", code="sibling_of"
+    )
+    authorized = client.post(
+        MEMBERS,
+        headers=owner,
+        json={
+            "user_id": 2,
+            "role": role,
+            "source_relationship_id": relation_id,
+        },
+    )
     assert authorized.status_code == 201, authorized.text
     registered = client.post(CONTRIBUTORS, headers=owner, json={"user_id": 2})
     assert registered.status_code == 201, registered.text
@@ -220,22 +280,35 @@ def test_shared_fragment_writes_check_role_consent_and_scope(client, tmp_path, m
     assert created.status_code == 201, created.text
     original = f"{fragments}/{created.json()['id']}"
     assert client.get(fragments, headers=relative).status_code == 404
-    assert client.post(MEMBERS, headers=owner, json={"user_id": 3, "role": "viewer"}).status_code == 201
+    assert (
+        client.post(MEMBERS, headers=owner, json={"user_id": 3, "role": "viewer"}).status_code
+        == 201
+    )
     assert client.get(fragments, headers=viewer).status_code == 200
     assert client.post(fragments, headers=viewer, json=payload).status_code == 403
     assert client.get(f"{urls}/12", headers=viewer).status_code == 404
-    delegate_relation = confirm_relationship(client, viewer, owner, user_id=1, kind="agent", code="agent_for")
-    old, = client.get(MEMBERS, headers=owner).json()["items"]
+    delegate_relation = confirm_relationship(
+        client, viewer, owner, user_id=1, kind="agent", code="agent_for"
+    )
+    (old,) = client.get(MEMBERS, headers=owner).json()["items"]
     assert client.post(f"{MEMBERS}/{old['id']}/revoke", headers=owner).status_code == 200
-    delegate = client.post(MEMBERS, headers=owner, json={
-        "user_id": 3, "role": "delegate", "source_relationship_id": delegate_relation,
-        "can_manage_members": True,
-    })
+    delegate = client.post(
+        MEMBERS,
+        headers=owner,
+        json={
+            "user_id": 3,
+            "role": "delegate",
+            "source_relationship_id": delegate_relation,
+            "can_manage_members": True,
+        },
+    )
     assert delegate.status_code == 201, delegate.text
     assert client.get(fragments, headers=viewer).status_code == 200
     assert client.post(fragments, headers=viewer, json=payload).status_code == 403
     with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
-        db.get(MemorySessionMember, delegate.json()["id"]).valid_until = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.get(MemorySessionMember, delegate.json()["id"]).valid_until = datetime.now(
+            timezone.utc
+        ) - timedelta(minutes=1)
     assert client.get(fragments, headers=viewer).status_code == 404
 
     _, member_id, contributor_id = register_material_contributor(client, owner, relative, role)
@@ -244,17 +317,27 @@ def test_shared_fragment_writes_check_role_consent_and_scope(client, tmp_path, m
     assert listed["total"] == 2
     assert client.post(fragments, headers=relative, json=payload).status_code == 403
     consent_url = f"{CONTRIBUTORS}/{contributor_id}/consent"
-    assert client.patch(consent_url, headers=relative, json={"consent_status": "accepted"}).status_code == 200
+    assert (
+        client.patch(consent_url, headers=relative, json={"consent_status": "accepted"}).status_code
+        == 200
+    )
     own = client.post(fragments, headers=relative, json=payload)
     assert own.status_code == 201, own.text
     assert own.json()["contributor_id"] == contributor_id
     own_url = f"{fragments}/{own.json()['id']}"
     updated = {"transcript_edited": "Reviewed"}
     assert client.patch(own_url, headers=relative, json=updated).status_code == 200
-    assert client.patch(original, headers=relative, json=updated).status_code == (200 if role == "editor" else 403)
+    assert client.patch(original, headers=relative, json=updated).status_code == (
+        200 if role == "editor" else 403
+    )
     assert client.get(f"{urls}/12/fragments/{own.json()['id']}", headers=owner).status_code == 404
     assert client.delete(f"{urls}/11", headers=relative).status_code == 404
-    assert client.patch(consent_url, headers=relative, json={"consent_status": "withdrawn"}).status_code == 200
+    assert (
+        client.patch(
+            consent_url, headers=relative, json={"consent_status": "withdrawn"}
+        ).status_code
+        == 200
+    )
     assert client.patch(own_url, headers=relative, json=updated).status_code == 403
     assert client.get(own_url, headers=relative).status_code == 200
     assert client.post(f"{MEMBERS}/{member_id}/revoke", headers=owner).status_code == 200
@@ -268,23 +351,43 @@ def test_attachment_upload_completion_rechecks_session_permission(client, tmp_pa
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path))
     owner = login(client, "13800000001")
     relative = login(client, "13800000002")
-    created = client.post("/api/recording-sessions/11/fragments", headers=owner, json={
-        "source_type": "text", "content_text": "Attachment target",
-    })
+    created = client.post(
+        "/api/recording-sessions/11/fragments",
+        headers=owner,
+        json={
+            "source_type": "text",
+            "content_text": "Attachment target",
+        },
+    )
     assert created.status_code == 201, created.text
     fragment_id = created.json()["id"]
-    relation_id, _, contributor_id = register_material_contributor(client, owner, relative, "contributor")
+    relation_id, _, contributor_id = register_material_contributor(
+        client, owner, relative, "contributor"
+    )
     consent_url = f"{CONTRIBUTORS}/{contributor_id}/consent"
-    assert client.patch(consent_url, headers=relative, json={"consent_status": "accepted"}).status_code == 200
+    assert (
+        client.patch(consent_url, headers=relative, json={"consent_status": "accepted"}).status_code
+        == 200
+    )
 
     def transfer(content):
-        authorized = client.post("/api/media-assets/upload-authorizations", headers=relative, json={
-            "purpose": "attachment", "media_type": "image", "filename": "photo.png",
-            "content_type": "image/png", "size_bytes": len(content), "fragment_id": fragment_id,
-        })
+        authorized = client.post(
+            "/api/media-assets/upload-authorizations",
+            headers=relative,
+            json={
+                "purpose": "attachment",
+                "media_type": "image",
+                "filename": "photo.png",
+                "content_type": "image/png",
+                "size_bytes": len(content),
+                "fragment_id": fragment_id,
+            },
+        )
         assert authorized.status_code == 201, authorized.text
         grant = authorized.json()
-        uploaded = client.put(grant["upload_url"], headers=grant["required_headers"], content=content)
+        uploaded = client.put(
+            grant["upload_url"], headers=grant["required_headers"], content=content
+        )
         assert uploaded.status_code == 200, uploaded.text
         return grant["asset_id"]
 
@@ -298,38 +401,75 @@ def test_attachment_upload_completion_rechecks_session_permission(client, tmp_pa
     assert added.json()[0]["contributor_id"] == contributor_id
     assert client.get(f"/api/media-assets/{first_id}", headers=owner).status_code == 404
     assert client.get(attachments, headers=owner).json()[0]["asset"]["id"] == first_id
-    assert client.patch(f"{attachments}/{attachment_id}", headers=owner, json={"caption": "Reviewed"}).status_code == 200
+    assert (
+        client.patch(
+            f"{attachments}/{attachment_id}", headers=owner, json={"caption": "Reviewed"}
+        ).status_code
+        == 200
+    )
     assert client.delete(f"{attachments}/{attachment_id}", headers=owner).status_code == 200
 
     second_id = transfer(b"\x89PNG\r\n\x1a\nsecond")
     assert client.post(f"{RELATIONSHIPS}/{relation_id}/revoke", headers=owner).status_code == 200
-    assert client.post(f"/api/media-assets/{second_id}/complete", headers=relative, json={}).status_code == 404
-    assert client.get(f"/api/media-assets/{second_id}", headers=relative).json()["upload_status"] == "pending_upload"
+    assert (
+        client.post(
+            f"/api/media-assets/{second_id}/complete", headers=relative, json={}
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/media-assets/{second_id}", headers=relative).json()["upload_status"]
+        == "pending_upload"
+    )
     assert client.get(attachments, headers=relative).status_code == 404
 
 
-def test_contributor_cannot_delete_fragment_with_another_providers_attachment(client, tmp_path, monkeypatch):
+def test_contributor_cannot_delete_fragment_with_another_providers_attachment(
+    client, tmp_path, monkeypatch
+):
     settings = get_settings()
     monkeypatch.setattr(settings, "object_storage_mode", "mock")
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path))
     owner = login(client, "13800000001")
     relative = login(client, "13800000002")
     _, _, contributor_id = register_material_contributor(client, owner, relative, "contributor")
-    assert client.patch(f"{CONTRIBUTORS}/{contributor_id}/consent", headers=relative, json={
-        "consent_status": "accepted",
-    }).status_code == 200
+    assert (
+        client.patch(
+            f"{CONTRIBUTORS}/{contributor_id}/consent",
+            headers=relative,
+            json={
+                "consent_status": "accepted",
+            },
+        ).status_code
+        == 200
+    )
     fragments = "/api/recording-sessions/11/fragments"
-    created = client.post(fragments, headers=relative, json={"source_type": "text", "content_text": "Shared"})
+    created = client.post(
+        fragments, headers=relative, json={"source_type": "text", "content_text": "Shared"}
+    )
     assert created.status_code == 201, created.text
     fragment_id = created.json()["id"]
     now = datetime.now(timezone.utc)
     with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
-        db.add(MediaAsset(
-            id=50, uploaded_by_user_id=1, purpose="attachment", media_type="image",
-            storage_provider="mock", storage_region="local", bucket_name="test", object_key="owner-image",
-            content_type="image/png", expected_size_bytes=1, size_bytes=1, content_sha256="a" * 64,
-            upload_status="uploaded", uploaded_at=now, upload_expires_at=now,
-        ))
+        db.add(
+            MediaAsset(
+                id=50,
+                uploaded_by_user_id=1,
+                purpose="attachment",
+                media_type="image",
+                storage_provider="mock",
+                storage_region="local",
+                bucket_name="test",
+                object_key="owner-image",
+                content_type="image/png",
+                expected_size_bytes=1,
+                size_bytes=1,
+                content_sha256="a" * 64,
+                upload_status="uploaded",
+                uploaded_at=now,
+                upload_expires_at=now,
+            )
+        )
     attachments = f"/api/memory-fragments/{fragment_id}/attachments"
     attached = client.post(attachments, headers=owner, json={"items": [{"asset_id": 50}]})
     assert attached.status_code == 201, attached.text
@@ -347,12 +487,23 @@ def test_relative_contributor_requires_registration_and_personal_consent(client)
     target = {"user_id": 2}
     assert client.get(CONTRIBUTORS).status_code == 401
     assert client.get(CONTRIBUTORS, headers=carol).status_code == 404
-    assert client.post(CONTRIBUTORS, headers=alice, json={"contributor_type": "guest"}).status_code == 422
-    relation_id = confirm_relationship(client, alice, bob, user_id=2, kind="family", code="sibling_of")
+    assert (
+        client.post(CONTRIBUTORS, headers=alice, json={"contributor_type": "guest"}).status_code
+        == 422
+    )
+    relation_id = confirm_relationship(
+        client, alice, bob, user_id=2, kind="family", code="sibling_of"
+    )
     assert client.post(CONTRIBUTORS, headers=alice, json=target).status_code == 422
-    grant = client.post(MEMBERS, headers=alice, json={
-        **target, "role": "contributor", "source_relationship_id": relation_id,
-    })
+    grant = client.post(
+        MEMBERS,
+        headers=alice,
+        json={
+            **target,
+            "role": "contributor",
+            "source_relationship_id": relation_id,
+        },
+    )
     assert grant.status_code == 201, grant.text
     assert client.get(f"{CONTRIBUTORS}/me", headers=bob).status_code == 404
     created = client.post(CONTRIBUTORS, headers=alice, json=target)
@@ -367,7 +518,10 @@ def test_relative_contributor_requires_registration_and_personal_consent(client)
     accepted_payload = {"consent_status": "accepted"}
     assert client.patch(url, headers=alice, json=accepted_payload).status_code == 404
     assert client.patch(url, headers=carol, json=accepted_payload).status_code == 404
-    assert client.patch(url.replace("/11/", "/12/"), headers=bob, json=accepted_payload).status_code == 404
+    assert (
+        client.patch(url.replace("/11/", "/12/"), headers=bob, json=accepted_payload).status_code
+        == 404
+    )
     accepted = client.patch(url, headers=bob, json=accepted_payload)
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["consented_at"] is not None
@@ -395,17 +549,33 @@ def test_rebinding_contributor_to_new_relationship_requires_fresh_consent(client
     created = client.post(CONTRIBUTORS, headers=alice, json={"user_id": 2})
     assert created.status_code == 201, created.text
     contributor_id = created.json()["id"]
-    assert client.patch(f"{CONTRIBUTORS}/{contributor_id}/consent", headers=bob, json={
-        "consent_status": "accepted",
-    }).status_code == 200
+    assert (
+        client.patch(
+            f"{CONTRIBUTORS}/{contributor_id}/consent",
+            headers=bob,
+            json={
+                "consent_status": "accepted",
+            },
+        ).status_code
+        == 200
+    )
     assert client.post(f"{RELATIONSHIPS}/{first}/revoke", headers=alice).status_code == 200
     second = confirm_relationship(client, alice, bob, user_id=2, kind="family", code="sibling_of")
-    assert client.post(MEMBERS, headers=alice, json={**grant, "source_relationship_id": second}).status_code == 201
+    assert (
+        client.post(
+            MEMBERS, headers=alice, json={**grant, "source_relationship_id": second}
+        ).status_code
+        == 201
+    )
     assert not client.get(f"{CONTRIBUTORS}/me", headers=bob).json()["is_eligible"]
     rebound = client.post(CONTRIBUTORS, headers=alice, json={"user_id": 2})
     assert rebound.status_code == 200, rebound.text
     row = rebound.json()
-    assert (row["id"], row["relationship_id"], row["consent_status"]) == (contributor_id, second, "pending")
+    assert (row["id"], row["relationship_id"], row["consent_status"]) == (
+        contributor_id,
+        second,
+        "pending",
+    )
     assert row["consented_at"] is None and row["is_eligible"]
 
 
@@ -413,13 +583,25 @@ def test_owner_contributor_uses_existing_record_without_exposing_phone(client):
     alice = login(client, "13800000001")
     with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
         db.execute(text("UPDATE t_user SET display_name = NULL WHERE id = 1"))
-        db.add(MemoryContributor(
-            id=26, session_id=11, account_user_id=1, contributor_type="owner",
-            display_name="13800000001", identity_status="verified", consent_status="pending",
-        ))
-        db.add(MemoryContributor(
-            id=27, session_id=11, contributor_type="guest", display_name="Historical guest",
-        ))
+        db.add(
+            MemoryContributor(
+                id=26,
+                session_id=11,
+                account_user_id=1,
+                contributor_type="owner",
+                display_name="13800000001",
+                identity_status="verified",
+                consent_status="pending",
+            )
+        )
+        db.add(
+            MemoryContributor(
+                id=27,
+                session_id=11,
+                contributor_type="guest",
+                display_name="Historical guest",
+            )
+        )
     registered = client.post(CONTRIBUTORS, headers=alice, json={"user_id": 1})
     assert registered.status_code == 200, registered.text
     assert registered.json()["id"] == 26
@@ -442,11 +624,18 @@ def test_session_member_lifecycle_is_scoped_and_regrant_preserves_member_id(clie
     assert member["status"] == "active" and member["is_effective"]
     assert client.get(MEMBERS, headers=bob).status_code == 403
     assert client.post(MEMBERS, headers=alice, json=payload).status_code == 409
-    assert client.post(f"/api/recording-sessions/12/members/{member['id']}/revoke", headers=alice).status_code == 404
+    assert (
+        client.post(
+            f"/api/recording-sessions/12/members/{member['id']}/revoke", headers=alice
+        ).status_code
+        == 404
+    )
     page = client.get(MEMBERS, headers=alice, params={"page": 2, "page_size": 1}).json()
     assert page == {"items": [], "page": 2, "page_size": 1, "total": 1}
 
-    revoked = client.post(f"{MEMBERS}/{member['id']}/revoke", headers=alice, json={"reason": "access ended"})
+    revoked = client.post(
+        f"{MEMBERS}/{member['id']}/revoke", headers=alice, json={"reason": "access ended"}
+    )
     assert revoked.status_code == 200, revoked.text
     assert revoked.json()["status"] == "revoked" and not revoked.json()["is_effective"]
     assert revoked.json()["revocation_reason"] == "access ended"
@@ -463,15 +652,23 @@ def test_expired_membership_is_reported_and_can_be_regranted(client):
     alice = login(client, "13800000001")
     payload = {"user_id": 2, "role": "viewer"}
     expired = datetime.now(timezone.utc) - timedelta(days=1)
-    assert client.post(MEMBERS, headers=alice, json={
-        **payload, "valid_until": expired.isoformat(),
-    }).status_code == 422
+    assert (
+        client.post(
+            MEMBERS,
+            headers=alice,
+            json={
+                **payload,
+                "valid_until": expired.isoformat(),
+            },
+        ).status_code
+        == 422
+    )
     grant = client.post(MEMBERS, headers=alice, json=payload)
     assert grant.status_code == 201, grant.text
     member_id = grant.json()["id"]
     with contextmanager(app.dependency_overrides[get_db])() as session, session.begin():
         session.get(MemorySessionMember, member_id).valid_until = expired
-    item, = client.get(MEMBERS, headers=alice).json()["items"]
+    (item,) = client.get(MEMBERS, headers=alice).json()["items"]
     assert item["status"] == "expired" and not item["is_effective"]
     renewed = client.post(MEMBERS, headers=alice, json=payload)
     assert renewed.status_code == 201, renewed.text
@@ -479,29 +676,44 @@ def test_expired_membership_is_reported_and_can_be_regranted(client):
 
 
 @pytest.mark.parametrize("role", ["contributor", "editor"])
-def test_family_member_grant_requires_confirmed_pair_and_stops_after_relationship_revocation(client, role):
+def test_family_member_grant_requires_confirmed_pair_and_stops_after_relationship_revocation(
+    client, role
+):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
     payload = {"user_id": 2, "role": role}
     assert client.post(MEMBERS, headers=alice, json=payload).status_code == 422
-    relation_id = confirm_relationship(client, alice, bob, user_id=2, kind="family", code="sibling_of")
+    relation_id = confirm_relationship(
+        client, alice, bob, user_id=2, kind="family", code="sibling_of"
+    )
     assert client.get(MEMBERS, headers=alice).json()["total"] == 0
-    created = client.post(MEMBERS, headers=alice, json={**payload, "source_relationship_id": relation_id})
+    created = client.post(
+        MEMBERS, headers=alice, json={**payload, "source_relationship_id": relation_id}
+    )
     assert created.status_code == 201, created.text
     assert created.json()["is_effective"]
     assert client.post(f"{RELATIONSHIPS}/{relation_id}/revoke", headers=bob).status_code == 200
-    item, = client.get(MEMBERS, headers=alice).json()["items"]
+    (item,) = client.get(MEMBERS, headers=alice).json()["items"]
     assert item["status"] == "active" and not item["is_effective"]
 
 
 def test_delegate_can_manage_regular_members_within_explicit_authority(client):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
-    relation_id = confirm_relationship(client, bob, alice, user_id=1, kind="agent", code="agent_for")
+    relation_id = confirm_relationship(
+        client, bob, alice, user_id=1, kind="agent", code="agent_for"
+    )
     deadline = datetime.now(timezone.utc) + timedelta(days=1)
-    payload = {"user_id": 2, "role": "delegate", "source_relationship_id": relation_id,
-               "can_manage_members": True, "valid_until": deadline.isoformat()}
-    reversed_grant = client.post("/api/recording-sessions/13/members", headers=bob, json={**payload, "user_id": 1})
+    payload = {
+        "user_id": 2,
+        "role": "delegate",
+        "source_relationship_id": relation_id,
+        "can_manage_members": True,
+        "valid_until": deadline.isoformat(),
+    }
+    reversed_grant = client.post(
+        "/api/recording-sessions/13/members", headers=bob, json={**payload, "user_id": 1}
+    )
     assert reversed_grant.status_code == 422
     delegate = client.post(MEMBERS, headers=alice, json=payload)
     assert delegate.status_code == 201, delegate.text
@@ -509,13 +721,23 @@ def test_delegate_can_manage_regular_members_within_explicit_authority(client):
     assert client.get(MEMBERS, headers=bob).status_code == 200
     viewer = {"user_id": 3, "role": "viewer"}
     assert client.post(MEMBERS, headers=bob, json={**viewer, "role": "delegate"}).status_code == 403
-    assert client.post(MEMBERS, headers=bob, json={
-        **viewer, "valid_until": (deadline + timedelta(days=1)).isoformat(),
-    }).status_code == 422
+    assert (
+        client.post(
+            MEMBERS,
+            headers=bob,
+            json={
+                **viewer,
+                "valid_until": (deadline + timedelta(days=1)).isoformat(),
+            },
+        ).status_code
+        == 422
+    )
     grant = client.post(MEMBERS, headers=bob, json=viewer)
     assert grant.status_code == 201, grant.text
     assert grant.json()["granted_by_user_id"] == 2
-    assert datetime.fromisoformat(grant.json()["valid_until"]).replace(tzinfo=timezone.utc) == deadline
+    assert (
+        datetime.fromisoformat(grant.json()["valid_until"]).replace(tzinfo=timezone.utc) == deadline
+    )
     assert client.post(f"{MEMBERS}/{delegate_id}/revoke", headers=bob).status_code == 403
     assert client.post(f"{RELATIONSHIPS}/{relation_id}/revoke", headers=alice).status_code == 200
     assert client.get(MEMBERS, headers=bob).status_code == 403
@@ -526,12 +748,21 @@ def test_relationship_list_paginates_groups_and_preserves_current_user_direction
     bob = login(client, "13800000002")
     url = "/api/users/me/relationships"
     for kind, code in (("family", "parent_of"), ("other", "other")):
-        invitation = client.post(url, headers=alice, json={
-            "related_user_id": 2, "relationship_type": kind, "relation_code": code,
-        })
+        invitation = client.post(
+            url,
+            headers=alice,
+            json={
+                "related_user_id": 2,
+                "relationship_type": kind,
+                "relation_code": code,
+            },
+        )
         assert invitation.status_code == 201, invitation.text
         if kind == "family":
-            assert client.post(f"{url}/{invitation.json()['id']}/accept", headers=bob).status_code == 200
+            assert (
+                client.post(f"{url}/{invitation.json()['id']}/accept", headers=bob).status_code
+                == 200
+            )
 
     assert client.get(url, headers=bob).json()["page_size"] == 20
     for page, expected_codes in ((1, ["other"]), (2, ["child_of"]), (3, [])):
@@ -558,48 +789,67 @@ def test_incomplete_legacy_family_relation_requires_new_confirmation(client, leg
 
     with contextmanager(app.dependency_overrides[get_db])() as session, session.begin():
         if legacy_case == "missing_inverse":
-            session.execute(text("UPDATE t_user_relationship SET status = 'active' WHERE id = :id"),
-                            {"id": invitation_id})
+            session.execute(
+                text("UPDATE t_user_relationship SET status = 'active' WHERE id = :id"),
+                {"id": invitation_id},
+            )
         else:
-            session.execute(text("UPDATE t_user_relationship SET relation_code = 'sibling_of' WHERE id <> :id"),
-                            {"id": invitation_id})
+            session.execute(
+                text("UPDATE t_user_relationship SET relation_code = 'sibling_of' WHERE id <> :id"),
+                {"id": invitation_id},
+            )
 
     for headers in (alice, bob):
-        assert client.get(url, headers=headers).json()["items"][0]["status"] == "requires_confirmation"
+        assert (
+            client.get(url, headers=headers).json()["items"][0]["status"] == "requires_confirmation"
+        )
     replacement = client.post(url, headers=alice, json=payload)
     assert replacement.status_code == 201, replacement.text
     assert client.post(f"{url}/{replacement.json()['id']}/accept", headers=bob).status_code == 200
     assert {item["status"] for item in client.get(url, headers=alice).json()["items"]} == {
-        "active", "requires_confirmation",
+        "active",
+        "requires_confirmation",
     }
 
 
-def test_family_invitation_acceptance_creates_reciprocal_rows_and_revoke_updates_pair(client: TestClient):
+def test_family_invitation_acceptance_creates_reciprocal_rows_and_revoke_updates_pair(
+    client: TestClient,
+):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
 
-    created = client.post("/api/users/me/relationships", headers=alice, json={
-        "related_user_id": 2,
-        "relationship_type": "family",
-        "relation_code": "parent_of",
-        "relationship_label": "女儿",
-    })
+    created = client.post(
+        "/api/users/me/relationships",
+        headers=alice,
+        json={
+            "related_user_id": 2,
+            "relationship_type": "family",
+            "relation_code": "parent_of",
+            "relationship_label": "女儿",
+        },
+    )
     assert created.status_code == 201, created.text
     invitation_id = created.json()["id"]
     assert created.json()["status"] == "pending"
 
-    duplicate = client.post("/api/users/me/relationships", headers=bob, json={
-        "related_user_id": 1, "relationship_type": "family", "relation_code": "child_of",
-    })
+    duplicate = client.post(
+        "/api/users/me/relationships",
+        headers=bob,
+        json={
+            "related_user_id": 1,
+            "relationship_type": "family",
+            "relation_code": "child_of",
+        },
+    )
     assert duplicate.status_code == 409
 
     accepted = client.post(f"/api/users/me/relationships/{invitation_id}/accept", headers=bob)
     assert accepted.status_code == 200, accepted.text
     pair = accepted.json()
     assert len(pair) == 2
-    assert {(row["subject_user_id"], row["related_user_id"], row["relation_code"]) for row in pair} == {
-        (1, 2, "parent_of"), (2, 1, "child_of")
-    }
+    assert {
+        (row["subject_user_id"], row["related_user_id"], row["relation_code"]) for row in pair
+    } == {(1, 2, "parent_of"), (2, 1, "child_of")}
     assert len({row["relationship_pair_id"] for row in pair}) == 1
 
     bob_relationships = client.get("/api/users/me/relationships", headers=bob)
@@ -611,38 +861,59 @@ def test_family_invitation_acceptance_creates_reciprocal_rows_and_revoke_updates
     assert revoked.status_code == 200
     assert len(revoked.json()) == 2
     assert {row["status"] for row in revoked.json()} == {"revoked"}
-    assert client.post(f"/api/users/me/relationships/{invitation_id}/revoke", headers=alice).status_code == 409
+    assert (
+        client.post(
+            f"/api/users/me/relationships/{invitation_id}/revoke", headers=alice
+        ).status_code
+        == 409
+    )
 
 
 def test_agent_relationship_stays_directional_and_reject_is_recorded(client: TestClient):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
-    invite = client.post("/api/users/me/relationships", headers=alice, json={
-        "related_user_id": 2,
-        "relationship_type": "agent",
-        "relation_code": "agent_for",
-    })
+    invite = client.post(
+        "/api/users/me/relationships",
+        headers=alice,
+        json={
+            "related_user_id": 2,
+            "relationship_type": "agent",
+            "relation_code": "agent_for",
+        },
+    )
     assert invite.status_code == 201, invite.text
     rejected = client.post(f"/api/users/me/relationships/{invite.json()['id']}/reject", headers=bob)
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
 
 
-def test_relationship_invitation_rejects_mismatched_code_and_unauthorized_accept(client: TestClient):
+def test_relationship_invitation_rejects_mismatched_code_and_unauthorized_accept(
+    client: TestClient,
+):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
-    invalid = client.post("/api/users/me/relationships", headers=alice, json={
-        "related_user_id": 2,
-        "relationship_type": "family",
-        "relation_code": "agent_for",
-    })
+    invalid = client.post(
+        "/api/users/me/relationships",
+        headers=alice,
+        json={
+            "related_user_id": 2,
+            "relationship_type": "family",
+            "relation_code": "agent_for",
+        },
+    )
     assert invalid.status_code == 422
 
-    invite = client.post("/api/users/me/relationships", headers=alice, json={
-        "related_user_id": 2,
-        "relationship_type": "family",
-        "relation_code": "sibling_of",
-    })
+    invite = client.post(
+        "/api/users/me/relationships",
+        headers=alice,
+        json={
+            "related_user_id": 2,
+            "relationship_type": "family",
+            "relation_code": "sibling_of",
+        },
+    )
     assert invite.status_code == 201
-    unauthorized = client.post(f"/api/users/me/relationships/{invite.json()['id']}/accept", headers=alice)
+    unauthorized = client.post(
+        f"/api/users/me/relationships/{invite.json()['id']}/accept", headers=alice
+    )
     assert unauthorized.status_code == 404

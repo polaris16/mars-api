@@ -1,23 +1,33 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 from fastapi import HTTPException
-import json
+from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.models import FragmentAttachment, MediaAsset, MemoryFragment
-from app.schemas.memory import AttachmentInput, AttachmentPatch, FragmentCreate, SessionSummary, UploadAuthorizationRequest, UploadCompleteRequest
+from app.schemas.memory import (
+    AttachmentInput,
+    AttachmentPatch,
+    FragmentCreate,
+    SessionSummary,
+    UploadAuthorizationRequest,
+    UploadCompleteRequest,
+)
 from app.services.object_storage_service import ObjectStorageService
 
 
-@pytest.mark.parametrize(("schema", "field", "maximum"), [
-    (UploadCompleteRequest, "duration_ms", (1 << 63) - 1),
-    (UploadCompleteRequest, "sample_rate_hz", (1 << 31) - 1),
-    (AttachmentInput, "sort_order", (1 << 31) - 1),
-    (AttachmentPatch, "sort_order", (1 << 31) - 1),
-])
+@pytest.mark.parametrize(
+    ("schema", "field", "maximum"),
+    [
+        (UploadCompleteRequest, "duration_ms", (1 << 63) - 1),
+        (UploadCompleteRequest, "sample_rate_hz", (1 << 31) - 1),
+        (AttachmentInput, "sort_order", (1 << 31) - 1),
+        (AttachmentPatch, "sort_order", (1 << 31) - 1),
+    ],
+)
 def test_media_metadata_fits_postgresql_integer_range(schema, field, maximum):
     payload = {"asset_id": 1} if schema is AttachmentInput else {}
     assert getattr(schema.model_validate({**payload, field: maximum}), field) == maximum
@@ -100,7 +110,9 @@ def test_upload_authorization_rejects_text_attachment():
 
 
 @pytest.mark.parametrize("invalid_tail", [b"\xff", b"\x00", b"\xe4\xb8"])
-def test_text_asset_upload_rejects_invalid_data_beyond_signature_prefix(tmp_path, monkeypatch, invalid_tail):
+def test_text_asset_upload_rejects_invalid_data_beyond_signature_prefix(
+    tmp_path, monkeypatch, invalid_tail
+):
     settings = get_settings()
     monkeypatch.setattr(settings, "object_storage_mode", "mock")
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path))
@@ -120,8 +132,12 @@ def test_text_asset_upload_rejects_invalid_data_beyond_signature_prefix(tmp_path
 
 
 def test_material_models_have_source_and_contributor_fields():
-    assert {"uploaded_by_user_id", "media_type", "purpose"} <= set(MediaAsset.__table__.columns.keys())
-    assert {"source_type", "source_asset_id", "content_text", "contributor_id"} <= set(MemoryFragment.__table__.columns.keys())
+    assert {"uploaded_by_user_id", "media_type", "purpose"} <= set(
+        MediaAsset.__table__.columns.keys()
+    )
+    assert {"source_type", "source_asset_id", "content_text", "contributor_id"} <= set(
+        MemoryFragment.__table__.columns.keys()
+    )
     assert "contributor_id" in FragmentAttachment.__table__.columns
     assert not MemoryFragment.__table__.c.contributor_id.nullable
     assert not FragmentAttachment.__table__.c.contributor_id.nullable

@@ -54,7 +54,9 @@ class TextExtractionModel:
             and url.scheme == "https"
             and bool(host and not host.endswith(".invalid"))
             and not any((url.username, url.password, url.query, url.fragment))
-            and bool(self.settings.ai_text_model and self.settings.ai_text_api_key.get_secret_value())
+            and bool(
+                self.settings.ai_text_model and self.settings.ai_text_api_key.get_secret_value()
+            )
         )
 
     @property
@@ -73,7 +75,10 @@ class TextExtractionModel:
             "model": self.settings.ai_text_model,
             "messages": [
                 {"role": "system", "content": EXTRACTION_INSTRUCTIONS},
-                {"role": "user", "content": json.dumps({"source_text": source_text}, ensure_ascii=False)},
+                {
+                    "role": "user",
+                    "content": json.dumps({"source_text": source_text}, ensure_ascii=False),
+                },
             ],
             "response_format": {"type": "json_object"},
         }

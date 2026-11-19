@@ -14,7 +14,6 @@ from app.schemas.user_relationship import (
 )
 from app.services.user_relationship_service import UserRelationshipService
 
-
 router = APIRouter(prefix="/users/me/relationships", tags=["user relationships"])
 
 
@@ -29,7 +28,12 @@ def list_relationships(
     return service.list_for_user(session, current_user, page, page_size)
 
 
-@router.post("", response_model=RelationshipRecordResponse, status_code=status.HTTP_201_CREATED, summary="发起用户关系邀请")
+@router.post(
+    "",
+    response_model=RelationshipRecordResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="发起用户关系邀请",
+)
 def create_relationship(
     body: RelationshipCreateRequest,
     current_user: CurrentUser,
@@ -39,7 +43,11 @@ def create_relationship(
     return service.create(session, current_user, body)
 
 
-@router.post("/{relationship_id}/accept", response_model=list[RelationshipRecordResponse], summary="接受用户关系邀请")
+@router.post(
+    "/{relationship_id}/accept",
+    response_model=list[RelationshipRecordResponse],
+    summary="接受用户关系邀请",
+)
 def accept_relationship(
     relationship_id: int,
     current_user: CurrentUser,
@@ -49,7 +57,11 @@ def accept_relationship(
     return service.accept(session, current_user, relationship_id)
 
 
-@router.post("/{relationship_id}/reject", response_model=RelationshipRecordResponse, summary="拒绝用户关系邀请")
+@router.post(
+    "/{relationship_id}/reject",
+    response_model=RelationshipRecordResponse,
+    summary="拒绝用户关系邀请",
+)
 def reject_relationship(
     relationship_id: int,
     current_user: CurrentUser,
@@ -59,7 +71,11 @@ def reject_relationship(
     return service.reject(session, current_user, relationship_id)
 
 
-@router.post("/{relationship_id}/revoke", response_model=list[RelationshipRecordResponse], summary="撤回待确认邀请或撤销有效关系")
+@router.post(
+    "/{relationship_id}/revoke",
+    response_model=list[RelationshipRecordResponse],
+    summary="撤回待确认邀请或撤销有效关系",
+)
 def revoke_relationship(
     relationship_id: int,
     current_user: CurrentUser,

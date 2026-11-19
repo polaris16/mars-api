@@ -1,17 +1,21 @@
 """Requests and responses for registered-user relationships."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from typing import Annotated
-
 
 RelationshipType = Literal["family", "agent", "caregiver", "other"]
 RelationCode = Literal[
-    "parent_of", "child_of", "spouse_of", "sibling_of", "related_to",
-    "agent_for", "caregiver_for", "other",
+    "parent_of",
+    "child_of",
+    "spouse_of",
+    "sibling_of",
+    "related_to",
+    "agent_for",
+    "caregiver_for",
+    "other",
 ]
 
 
@@ -19,7 +23,9 @@ class RelationshipCreateRequest(BaseModel):
     related_user_id: int = Field(gt=0)
     relationship_type: RelationshipType
     relation_code: RelationCode
-    relationship_label: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None = None
+    relationship_label: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None
+    ) = None
     valid_until: datetime | None = None
 
 

@@ -1,6 +1,16 @@
 """可供用户选择的兴趣领域字典。"""
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, PrimaryKeyConstraint, String, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    UniqueConstraint,
+    text,
+)
 
 from app.models.base import Base
 
@@ -20,7 +30,17 @@ class InterestDomain(Base):
     is_enabled = Column(Boolean, nullable=False, server_default=text("true"), comment="是否启用")
     sort_order = Column(Integer, nullable=False, server_default=text("0"), comment="显示顺序")
     created_by = Column(BigInteger, nullable=True, comment="创建人ID")
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="创建时间")
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
     updated_by = Column(BigInteger, nullable=True, comment="更新人ID")
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), comment="更新时间")
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     is_del = Column(Boolean, nullable=False, server_default=text("false"), comment="是否删除")
