@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.config import Settings, get_settings
+from app.core.config import MockExtractionScenario, Settings, get_settings
 from app.models import (
     AIProcessingJob,
     MediaAsset,
@@ -121,6 +121,20 @@ class MemoryExtractionService:
                 )
             )
         )
+
+    def _mock_scenario(self, parent: AIProcessingJob | None) -> MockExtractionScenario:
+        scenario = self.settings.ai_text_mock_scenario
+        # [新增] 真实、取消或未生成兜底的旧任务仍按当前场景处理。
+        if (
+            scenario == "fallback"
+            and parent is not None
+            and parent.status == "failed"
+            and parent.input_payload.get("model_provider") == "mock"
+            and parent.input_payload.get("mock_scenario") == "fallback"
+            and (parent.result_payload or {}).get("fallback_element_id") is not None
+        ):
+            return "success"
+        return scenario
 
     @staticmethod
     def _source(db: Session, fragment: MemoryFragment) -> Source:
@@ -296,6 +310,18 @@ class MemoryExtractionService:
             if not body.allow_external_processing and not already_authorized:
                 raise _problem(403, "SOURCE_AI_AUTHORIZATION_REQUIRED")
             authorized_author = author_id
+        input_payload = {
+            "source_kind": source.kind,
+            "source_asset_id": source.asset_id,
+            "source_fingerprint": source.fingerprint,
+            "extractor_version": EXTRACTOR_VERSION,
+            "retry_of_job_id": body.retry_of_job_id,
+            "model_scope": model_scope,
+            "authorized_source_user_id": authorized_author,
+        }
+        if not self.model.external:
+            # [新增] 配置切换只影响新任务，Worker 按任务自身的场景重试。
+            input_payload.update(model_provider="mock", mock_scenario=self._mock_scenario(parent))
         now = _now()
         job = AIProcessingJob(
             session_id=session_id,
@@ -310,15 +336,7 @@ class MemoryExtractionService:
             idempotency_key=_digest(
                 f"{fragment_id}:{source.kind}:{source.fingerprint}:{EXTRACTOR_VERSION}:{body.retry_of_job_id}"
             ),
-            input_payload={
-                "source_kind": source.kind,
-                "source_asset_id": source.asset_id,
-                "source_fingerprint": source.fingerprint,
-                "extractor_version": EXTRACTOR_VERSION,
-                "retry_of_job_id": body.retry_of_job_id,
-                "model_scope": model_scope,
-                "authorized_source_user_id": authorized_author,
-            },
+            input_payload=input_payload,
             created_by=requester.id,
             updated_by=requester.id,
             created_at=now,
@@ -619,9 +637,16 @@ class MemoryExtractionService:
         verified = []
         error = None
         try:
+            mock_options = {}
             with db.begin():
                 job = self._claimed_job(db, claim)
                 source = self._recheck(db, job, lock=False)
+                if not self.model.external:
+                    # 早期 Mock 任务没有场景字段，仍生成正常结果。
+                    mock_options = {
+                        "mock_scenario": job.input_payload.get("mock_scenario", "success"),
+                        "attempt_count": job.attempt_count,
+                    }
             text = self._read_source(source, storage, deadline)
             if not text.strip():
                 raise ExtractionError("SOURCE_TEXT_REQUIRED")
@@ -634,7 +659,7 @@ class MemoryExtractionService:
                 with db.begin():
                     self._recheck(db, self._claimed_job(db, claim), lock=False)
             extracted = _bounded_io(
-                lambda timeout: self.model.extract(text, timeout),
+                lambda timeout: self.model.extract(text, timeout, **mock_options),
                 deadline,
                 "MODEL_TIMEOUT",
             )

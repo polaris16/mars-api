@@ -8,6 +8,8 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
+MockExtractionScenario = Literal["success", "empty", "retry_once", "fallback"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -56,6 +58,8 @@ class Settings(BaseSettings):
     # Only the text model is used by Stage 2. The other model groups remain examples.
     ai_text_enabled: bool = False
     ai_text_provider: str = "mock"
+    # [新增] 场景仅用于登记 Mock 任务，已登记任务沿用自己的配置快照。
+    ai_text_mock_scenario: MockExtractionScenario = "success"
     ai_text_base_url: str = ""
     ai_text_api_key: SecretStr = SecretStr("")
     ai_text_model: str = ""

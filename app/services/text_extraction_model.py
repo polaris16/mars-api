@@ -1,12 +1,13 @@
 """Text model adapter for Stage 2 extraction."""
 
 import json
+import re
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from app.core.config import Settings
+from app.core.config import MockExtractionScenario, Settings
 from app.schemas.memory_extraction import ExtractedElement, ExtractedElements
 
 
@@ -63,13 +64,29 @@ class TextExtractionModel:
     def external(self) -> bool:
         return self.settings.ai_text_provider != "mock"
 
-    def extract(self, source_text: str, timeout: float) -> list[ExtractedElement]:
+    def extract(
+        self,
+        source_text: str,
+        timeout: float,
+        *,
+        mock_scenario: MockExtractionScenario = "success",
+        attempt_count: int = 1,
+    ) -> list[ExtractedElement]:
         if not self.available:
             raise ExtractionError("EXTRACTION_UNAVAILABLE")
         if not self.external:
+            # [删除-旧] 基础 Mock 只生成一条原文预览。
             # Deterministic local fixture for front-end development. It does not infer facts.
-            quote = source_text.strip()[:120]
-            return [ExtractedElement(element_type="other", summary=quote, source_quote=quote)]
+            # quote = source_text.strip()[:120]
+            # return [ExtractedElement(element_type="other", summary=quote, source_quote=quote)]
+            # [修改] 模拟模型结果或错误，任务状态与兜底仍由业务服务处理。
+            if mock_scenario == "empty":
+                return []
+            if mock_scenario == "fallback" or (
+                mock_scenario == "retry_once" and attempt_count == 1
+            ):
+                raise ExtractionError("MODEL_TEMPORARY_ERROR", retryable=True)
+            return self._mock_elements(source_text)
 
         body = {
             "model": self.settings.ai_text_model,
@@ -111,3 +128,21 @@ class TextExtractionModel:
             return ExtractedElements.model_validate_json(content).elements
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionError("MODEL_OUTPUT_INVALID") from None
+
+    @staticmethod
+    def _mock_elements(source_text: str) -> list[ExtractedElement]:
+        """按原文顺序生成有限条候选，供前端验证原文高亮。"""
+        elements = []
+        seen_quotes = set()
+        # 在整组句末标点后切分，保留原有标点和可核对的引句。
+        for sentence in re.split(r"(?<=[。！？.!?])(?![。！？.!?])|[\r\n]+", source_text):
+            quote = sentence.strip()[:120].rstrip()
+            if not quote or quote in seen_quotes:
+                continue
+            seen_quotes.add(quote)
+            elements.append(
+                ExtractedElement(element_type="other", summary=quote, source_quote=quote)
+            )
+            if len(elements) == 3:
+                break
+        return elements

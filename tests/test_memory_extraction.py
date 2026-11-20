@@ -3,18 +3,19 @@
 import json
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from io import BytesIO
 from uuid import uuid4
 
 import pytest
 from fastapi import Depends, HTTPException, Request
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import JSON, Integer, create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.dependencies import get_current_user
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.database import get_db
 from app.main import create_app
 from app.models import (
@@ -49,6 +50,7 @@ def extraction_api(tmp_path, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "ai_text_provider", "mock")
     monkeypatch.setattr(settings, "ai_text_enabled", True)
+    monkeypatch.setattr(settings, "ai_text_mock_scenario", "success")
     monkeypatch.setattr(settings, "ai_text_max_attempts", 3)
     monkeypatch.setattr(settings, "object_storage_mode", "mock")
     monkeypatch.setattr(settings, "object_storage_mock_directory", str(tmp_path / "media"))
@@ -154,6 +156,131 @@ def save_text(client, source="我在上海读书。", **fields):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def run_due_attempt(factory, job_id):
+    # 用已到期的任务验证 Worker 流程，无需等待真实退避时间。
+    with factory.begin() as db:
+        db.get(AIProcessingJob, job_id).available_at = datetime.now(timezone.utc) - timedelta(
+            seconds=1
+        )
+    with factory() as db:
+        assert MemoryExtractionService().run(db)
+
+
+def test_mock_scenario_settings_reject_unknown_values(monkeypatch):
+    monkeypatch.delenv("AI_TEXT_MOCK_SCENARIO", raising=False)
+    assert Settings(_env_file=None).ai_text_mock_scenario == "success"
+    monkeypatch.setenv("AI_TEXT_MOCK_SCENARIO", "empty")
+    assert Settings(_env_file=None).ai_text_mock_scenario == "empty"
+    monkeypatch.setenv("AI_TEXT_MOCK_SCENARIO", "wrong")
+    with pytest.raises(ValidationError, match="ai_text_mock_scenario"):
+        Settings(_env_file=None)
+
+
+def test_mock_success_returns_at_most_three_verifiable_quotes_offline(extraction_api, monkeypatch):
+    client, _ = extraction_api
+    monkeypatch.setattr(get_settings(), "ai_text_api_key", SecretStr(""))
+
+    def unexpected_network(*_):
+        pytest.fail("Mock 抽取无需连接外部服务")
+
+    monkeypatch.setattr("app.services.text_extraction_model.build_opener", unexpected_network)
+    first = "第一句。"
+    second = "第二句🙂！？"
+    long_sentence = "第三句" + "长" * 130 + "。"
+    source = f"  {first}{first}\n{second}\n{long_sentence}第四句。"
+    fragment = save_text(client, source)
+    assert fragment["extraction_job"]["status"] == "succeeded"
+    assert fragment["extraction_job"]["element_count"] == 3
+    rows = client.get(ELEMENTS, headers=OWNER, params={"source_fragment_id": fragment["id"]})
+    assert rows.status_code == 200
+    items = rows.json()["items"]
+    assert [item["summary"] for item in items] == [first, second, long_sentence[:120]]
+    for item in items:
+        assert (item["origin"], item["review_status"], item["element_type"]) == (
+            "extracted",
+            "pending",
+            "other",
+        )
+        assert item["overall_confidence"] is None and item["location_description"] is None
+    evidence = [
+        client.get(f"{ELEMENTS}/{item['id']}/provenance", headers=OWNER).json() for item in items
+    ]
+    assert evidence[0]["source_quote"] == first
+    assert evidence[0]["start_offset"] is None and evidence[0]["end_offset"] is None
+    for proof in evidence[1:]:
+        assert source[proof["start_offset"] : proof["end_offset"]] == proof["source_quote"]
+
+
+def test_mock_retry_once_keeps_original_scenario_after_configuration_switch(
+    extraction_api, monkeypatch
+):
+    client, factory = extraction_api
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ai_text_mock_scenario", "retry_once")
+    fragment = save_text(client)
+    queued = fragment["extraction_job"]
+    assert (queued["status"], queued["attempt_count"], queued["error_code"]) == (
+        "queued",
+        1,
+        "MODEL_TEMPORARY_ERROR",
+    )
+    assert queued["next_retry_at"] is not None and queued["fallback_element_id"] is None
+
+    monkeypatch.setattr(settings, "ai_text_mock_scenario", "empty")
+    empty = save_text(client, "另一段口述。")
+    empty_job = empty["extraction_job"]
+    assert (empty_job["status"], empty_job["element_count"], empty_job["fallback_element_id"]) == (
+        "succeeded",
+        0,
+        None,
+    )
+    assert (
+        client.get(ELEMENTS, headers=OWNER, params={"source_fragment_id": empty["id"]}).json()[
+            "items"
+        ]
+        == []
+    )
+
+    run_due_attempt(factory, queued["id"])
+    finished = client.get(f"{SESSION}/extraction-jobs/{queued['id']}", headers=OWNER).json()
+    assert (
+        finished["id"],
+        finished["status"],
+        finished["attempt_count"],
+        finished["element_count"],
+    ) == (
+        queued["id"],
+        "succeeded",
+        2,
+        1,
+    )
+    assert finished["error_code"] is None and finished["next_retry_at"] is None
+    with factory() as db:
+        old_job = db.get(AIProcessingJob, queued["id"])
+        assert old_job.input_payload["mock_scenario"] == "retry_once"
+        assert old_job.input_payload["model_provider"] == "mock"
+        assert db.get(AIProcessingJob, empty_job["id"]).input_payload["mock_scenario"] == "empty"
+        assert len(old_job.result_payload["failures"]) == 1
+
+
+def test_legacy_mock_job_without_saved_scenario_uses_success(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    monkeypatch.setattr(get_settings(), "ai_text_mock_scenario", "empty")
+    with monkeypatch.context() as no_sync:
+        no_sync.setattr(MemoryExtractionService, "run", lambda *_args, **_kwargs: False)
+        job_id = save_text(client)["extraction_job"]["id"]
+    with factory.begin() as db:
+        job = db.get(AIProcessingJob, job_id)
+        job.input_payload = {
+            field: value
+            for field, value in job.input_payload.items()
+            if field not in {"model_provider", "mock_scenario"}
+        }
+    run_due_attempt(factory, job_id)
+    result = client.get(f"{SESSION}/extraction-jobs/{job_id}", headers=OWNER).json()
+    assert (result["status"], result["element_count"]) == ("succeeded", 1)
 
 
 def test_synchronous_extraction_is_idempotent_and_provenance_is_scoped(extraction_api):
@@ -293,29 +420,20 @@ def test_session_latest_recorded_at_tracks_live_fragments_after_backfill_and_del
 
 def test_retry_budget_fallback_and_manual_replacement(extraction_api, monkeypatch):
     client, factory = extraction_api
-    original_extract = TextExtractionModel.extract
-
-    def unavailable(*_):
-        raise ExtractionError("MODEL_UNREACHABLE", retryable=True)
-
-    monkeypatch.setattr(TextExtractionModel, "extract", unavailable)
+    monkeypatch.setattr(get_settings(), "ai_text_mock_scenario", "fallback")
     source = "  " + "上海往事。" * 50 + "  "
     fragment = save_text(client, source)
     job = fragment["extraction_job"]
-    assert job["status"] == "queued" and job["error_code"] == "MODEL_UNREACHABLE"
+    assert job["status"] == "queued" and job["error_code"] == "MODEL_TEMPORARY_ERROR"
     assert job["next_retry_at"] is not None
     assert client.get(ELEMENTS, headers=OWNER).json()["total"] == 0
     job_url = f"{SESSION}/extraction-jobs/{job['id']}"
-    service = MemoryExtractionService()
     for attempts in (2, 3):
-        with factory.begin() as db:
-            db.get(AIProcessingJob, job["id"]).available_at = datetime.now(
-                timezone.utc
-            ) - timedelta(seconds=1)
-        with factory() as db:
-            assert service.run(db)
+        run_due_attempt(factory, job["id"])
         status = client.get(job_url, headers=OWNER).json()
         assert status["attempt_count"] == attempts
+        if attempts < 3:
+            assert status["status"] == "queued" and status["fallback_element_id"] is None
     assert status["status"] == "failed" and status["element_count"] is None
     with factory() as db:
         assert len(db.get(AIProcessingJob, job["id"]).result_payload["failures"]) == 3
@@ -325,19 +443,24 @@ def test_retry_budget_fallback_and_manual_replacement(extraction_api, monkeypatc
     quote = client.get(f"{ELEMENTS}/{fallback_id}/provenance", headers=VIEWER).json()
     assert quote["source_text"] == source and quote["end_offset"] == len(source)
 
-    monkeypatch.setattr(TextExtractionModel, "extract", original_extract)
     jobs = f"{FRAGMENTS}/{fragment['id']}/extraction-jobs"
     retry = {"retry_of_job_id": job["id"]}
     result = client.post(jobs, headers=OWNER, json=retry)
     assert result.status_code == 200, result.text
     assert result.json()["status"] == "succeeded" and result.json()["retry_of_job_id"] == job["id"]
+    assert result.json()["id"] != job["id"] and result.json()["attempt_count"] == 1
     assert client.post(jobs, headers=OWNER, json=retry).json() == result.json()
     assert client.get(f"{ELEMENTS}/{fallback_id}", headers=OWNER).status_code == 404
-    assert client.get(job_url, headers=OWNER).json()["fallback_element_id"] is None
+    old_job = client.get(job_url, headers=OWNER).json()
+    assert old_job["status"] == "failed" and old_job["fallback_element_id"] is None
+    with factory() as db:
+        assert (
+            db.get(AIProcessingJob, result.json()["id"]).input_payload["mock_scenario"] == "success"
+        )
 
 
 def test_configuration_and_external_opt_in(extraction_api, monkeypatch):
-    client, _ = extraction_api
+    client, factory = extraction_api
     settings = get_settings()
     monkeypatch.setattr(settings, "ai_text_enabled", False)
     fragment = save_text(client)
@@ -352,26 +475,35 @@ def test_configuration_and_external_opt_in(extraction_api, monkeypatch):
     monkeypatch.setattr(settings, "ai_text_base_url", "https://models.test/v1")
     monkeypatch.setattr(settings, "ai_text_model", "test-model")
     monkeypatch.setattr(settings, "ai_text_api_key", SecretStr("fake-test-key"))
+    monkeypatch.setattr(settings, "ai_text_mock_scenario", "fallback")
     seen = []
 
-    def extract(_self, source, _timeout):
-        seen.append(source)
-        return []
+    class ExternalModelResponse:
+        def open(self, request, timeout):
+            seen.append((request.full_url, json.loads(request.data)))
+            return BytesIO(b'{"choices":[{"message":{"content":"{\\"elements\\":[]}"}}]}')
 
-    monkeypatch.setattr(TextExtractionModel, "extract", extract)
+    monkeypatch.setattr(
+        "app.services.text_extraction_model.build_opener", lambda *_: ExternalModelResponse()
+    )
     assert client.post(jobs, headers=OWNER, json={}).status_code == 403
     skipped = save_text(client)
     assert skipped["extraction_skip_reason"] == "SOURCE_AI_AUTHORIZATION_REQUIRED"
     assert seen == []
     submitted = client.post(jobs, headers=OWNER, json={"allow_external_processing": True})
     assert submitted.status_code == 200, submitted.text
-    assert submitted.json()["element_count"] == 0 and len(seen) == 1
+    assert (submitted.json()["status"], submitted.json()["element_count"]) == ("succeeded", 0)
+    [(url, payload)] = seen
+    assert url == "https://models.test/v1/chat/completions" and payload["model"] == "test-model"
+    assert json.loads(payload["messages"][1]["content"])["source_text"] == fragment["content_text"]
+    with factory() as db:
+        assert "mock_scenario" not in db.get(AIProcessingJob, submitted.json()["id"]).input_payload
 
 
 def test_unverifiable_model_evidence_uses_original_text_fallback(extraction_api, monkeypatch):
     client, _ = extraction_api
 
-    def fabricated_quote(*_):
+    def fabricated_quote(*_args, **_kwargs):
         return [
             ExtractedElement(
                 element_type="event", summary="编造的事件", source_quote="我在天津上学。"
