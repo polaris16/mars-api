@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from app.models import (
     MemorySessionMember,
     Topic,
     User,
+    UserRelationship,
 )
 from app.schemas.memory import (
     AttachmentBatchCreate,
@@ -39,6 +40,7 @@ from app.services.memory_contributor_service import MemoryContributorService
 from app.services.memory_session_member_service import MemorySessionMemberService
 from app.services.object_storage_service import ObjectStorageService
 from app.services.topic_service import TopicService
+from app.services.user_relationship_service import UserRelationshipService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
 
@@ -81,9 +83,42 @@ class MemoryService:
                 MemorySessionMember.is_del.is_(False),
             )
         )
-        if member is None or not self._shared_access_is_effective(session, row, member):
-            raise self._not_found()
-        return row, member.role
+        if row.visibility != "secret":
+            if member is not None and self._shared_access_is_effective(session, row, member):
+                return row, member.role
+            if row.visibility == "public" and self._public_access(session, row, user_id):
+                return row, "viewer"
+        raise self._not_found()
+
+    @staticmethod
+    def _require_source_owner(memory: MemorySession, role: str) -> None:
+        if memory.visibility is not None and role != "owner":
+            raise HTTPException(status_code=403, detail="只有会话所有者可以操作原始记忆")
+
+    @staticmethod
+    def _owner_is_active(session: Session, memory: MemorySession) -> bool:
+        return session.scalar(
+            select(User.id).where(User.id == memory.owner_user_id, User.is_del.is_(False))
+        ) is not None
+
+    @classmethod
+    def _public_access(cls, session: Session, memory: MemorySession, user_id: int) -> bool:
+        if not cls._owner_is_active(session, memory):
+            return False
+        now = datetime.now(timezone.utc)
+        pairs = {}
+        for row in session.scalars(
+            select(UserRelationship).where(
+                UserRelationship.relationship_type == "family",
+                UserRelationship.is_del.is_(False),
+                UserRelationship.subject_user_id.in_([user_id, memory.owner_user_id]),
+                UserRelationship.related_user_id.in_([user_id, memory.owner_user_id]),
+                UserRelationship.subject_user_id != UserRelationship.related_user_id,
+                or_(UserRelationship.valid_from.is_(None), UserRelationship.valid_from <= now),
+            )
+        ):
+            pairs.setdefault(row.relationship_pair_id, []).append(row)
+        return any(UserRelationshipService.is_confirmed_family_pair(pair, now) for pair in pairs.values())
 
     def _shared_access_is_effective(
         self,
@@ -91,16 +126,7 @@ class MemoryService:
         memory: MemorySession,
         member: MemorySessionMember,
     ) -> bool:
-        owner_active = (
-            session.scalar(
-                select(User.id).where(
-                    User.id == memory.owner_user_id,
-                    User.is_del.is_(False),
-                )
-            )
-            is not None
-        )
-        return owner_active and self.members.is_member_effective(
+        return self._owner_is_active(session, memory) and self.members.is_member_effective(
             session,
             memory.owner_user_id,
             member,
@@ -345,6 +371,7 @@ class MemoryService:
                 owner_user_id=user.id,
                 topic_id=body.topic_id,
                 title=body.title,
+                visibility=body.visibility or ("private" if get_settings().memory_pipeline_enabled else None),
                 created_by=user.id,
                 updated_by=user.id,
             )
@@ -368,6 +395,17 @@ class MemoryService:
             or_(
                 MemorySession.owner_user_id == user_id,
                 MemorySessionMember.id.is_not(None),
+                and_(
+                    MemorySession.visibility == "public",
+                    MemorySession.owner_user_id.in_(
+                        select(UserRelationship.related_user_id).where(
+                            UserRelationship.subject_user_id == user_id,
+                            UserRelationship.relationship_type == "family",
+                            UserRelationship.status == "active",
+                            UserRelationship.is_del.is_(False),
+                        )
+                    ),
+                ),
             ),
         ]
         if is_favorite is not None:
@@ -401,7 +439,8 @@ class MemoryService:
             row
             for row, member in candidates
             if row.owner_user_id == user_id
-            or self._shared_access_is_effective(session, row, member)
+            or (member is not None and self._shared_access_is_effective(session, row, member))
+            or (row.visibility == "public" and self._public_access(session, row, user_id))
         ]
         total = len(rows)
         start = (page - 1) * page_size
@@ -449,6 +488,7 @@ class MemoryService:
                     "topic_title": topic_title,
                     "title": row.title,
                     "is_favorite": row.is_favorite,
+                    "visibility": row.visibility,
                     "last_recorded_at": row.last_material_at,
                     "created_at": row.created_at,
                     "fragment_count": fragment_count,
@@ -584,6 +624,8 @@ class MemoryService:
                 )
             else:
                 memory, role = self._session_access(session, user_id, body.session_id, lock=True)
+            if body.purpose != "attachment":
+                self._require_source_owner(memory, role)
             self._require_contribution(session, memory, user, role)
             if body.sha256:
                 existing = session.scalar(
@@ -645,7 +687,7 @@ class MemoryService:
         if len(parts) < 4 or parts[3] != "scope":
             return
         try:
-            _, _, _, _, session_id, fragment_id, _ = parts
+            _, _, purpose, _, session_id, fragment_id, _ = parts
             session_id, fragment_id = int(session_id), int(fragment_id)
         except ValueError:
             raise self._not_found() from None
@@ -659,6 +701,8 @@ class MemoryService:
             )
         else:
             memory, role = self._session_access(session, user.id, session_id, lock=lock)
+        if purpose != "attachment":
+            self._require_source_owner(memory, role)
         self._require_contribution(session, memory, user, role)
 
     def complete_upload(
@@ -746,41 +790,26 @@ class MemoryService:
         after_flush: Callable[[MemoryFragment], None] | None = None,
         request_key: uuid.UUID | None = None,
     ) -> MemoryFragment:
-        # [删除-旧] 原实现只接受 audio_asset_id，片段固定引用音频并禁止素材复用；保留旧实现便于追溯。
-        # self._session(session, user.id, session_id)
-        # asset = self._asset(session, user.id, body.audio_asset_id)
-        # if asset.purpose != "recording" or asset.media_type != "audio" or asset.upload_status not in {"uploaded", "attached"}:
-        #     raise HTTPException(status_code=422, detail="音频素材未上传完成或用途不正确")
-        # session.rollback()
-        # with session.begin():
-        #     row = self._session(session, user.id, session_id, lock=True)
-        #     asset = self._asset(session, user.id, body.audio_asset_id, lock=True)
-        #     if session.scalar(select(MemoryFragment.id).where(MemoryFragment.audio_asset_id == asset.id)):
-        #         raise HTTPException(status_code=409, detail="该音频素材已关联语音片段")
-        #     # 序号在含软删除片段的所有历史记录中单调递增，避免撞上唯一约束。
-        #     last_no = session.scalar(select(func.max(MemoryFragment.sequence_no)).where(MemoryFragment.session_id == row.id)) or 0
-        #     fragment = MemoryFragment(session_id=row.id, sequence_no=last_no + 1, audio_asset_id=asset.id, transcript_raw=body.transcript_raw, recorded_at=body.recorded_at or datetime.now(timezone.utc), created_by=user.id, updated_by=user.id)
-        #     session.add(fragment)
-        #     row.last_material_at = fragment.recorded_at
-        #     row.updated_by = user.id
-        #     asset.upload_status = "attached"
-        #     asset.updated_by = user.id
-        #     session.flush()
-        # return fragment
-        # [新增] 统一处理文本、音频、视频片段，并在每条素材记录上保存提供者。
+        # 统一处理文本、音频、视频片段，并在每条素材记录上保存提供者。
         # [COMPAT] Keep audio_asset_id accepted as a source_asset_id alias.
         source_asset_id = body.source_asset_id or body.audio_asset_id
         request_hash = None
         if request_key is not None:
-            payload = body.model_dump(mode="json", exclude={"audio_asset_id"})
+            # 空定位数组维持存量幂等指纹。
+            excluded = {"audio_asset_id"}
+            for field in ("transcript_segments", "source_origin", "narrator_user_id", "narrator_spans"):
+                if not getattr(body, field):
+                    excluded.add(field)
+            payload = body.model_dump(mode="json", exclude=excluded)
             payload["source_asset_id"] = source_asset_id
             request_hash = sha256(
                 json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
             ).hexdigest()
         with session.begin():
             row, role = self._session_access(session, user.id, session_id, lock=True)
+            self._require_source_owner(row, role)
             contributor = self._require_contribution(session, row, user, role)
-            # [新增] 持有会话锁时查找请求键，同一次保存只允许首次请求落库。
+            # 持有会话锁时查找请求键，同一次保存只允许首次请求落库。
             if request_key is not None:
                 existing = session.scalar(
                     select(MemoryFragment).where(
@@ -795,6 +824,12 @@ class MemoryService:
                             status_code=409, detail="该幂等键已被其他内容或已删除片段使用"
                         )
                     return existing
+            if row.visibility is None:
+                if body.source_origin or body.narrator_user_id is not None or body.narrator_spans:
+                    raise HTTPException(status_code=409, detail="来源和叙述者标注需启用版本化会话")
+            elif body.source_type == "audio" and (body.transcript_raw is not None or body.transcript_segments):
+                # [新增] 有原声的新版会话由服务端完成转写。
+                raise HTTPException(status_code=422, detail="音频转写及时间定位由服务端生成")
             asset = (
                 self._asset(session, user.id, source_asset_id, lock=True)
                 if source_asset_id is not None
@@ -847,13 +882,12 @@ class MemoryService:
                 updated_by=user.id,
             )
             session.add(fragment)
-            # [删除-旧] row.last_material_at = fragment.recorded_at
             row.updated_by = user.id
             if asset is not None:
                 asset.upload_status = "attached"
                 asset.updated_by = user.id
             session.flush()
-            # [修改] 补录旧片段可能晚于最近片段到达，取现存片段的最大业务时间。
+            # 补录旧片段可能晚于最近片段到达，取现存片段的最大业务时间。
             row.last_material_at = self._latest_recorded_at(session, row.id)
             if row.topic_id is not None:
                 TopicService.record_participation(session, row.topic_id, user.id)
@@ -922,8 +956,6 @@ class MemoryService:
             "transcript_raw": fragment.transcript_raw,
             "transcript_edited": fragment.transcript_edited,
             "recorded_at": fragment.recorded_at,
-            # [移除] 旧 audio 响应字段与 source_asset 指向同一素材。
-            # "audio": self._asset_response(source_asset, storage) if fragment.source_type == "audio" and source_asset else None,
             "attachments": [
                 self._attachment_response(session, item, storage) for item in attachments
             ],
@@ -953,12 +985,15 @@ class MemoryService:
                 lock=True,
                 expected_session_id=session_id,
             )
+            self._require_source_owner(memory, role)
+            if memory.visibility is not None:
+                raise HTTPException(status_code=409, detail="请通过整理稿版本保存校订")
             self._require_material_edit(session, memory, user, role, fragment.contributor_id)
             fragment.transcript_edited = body.transcript_edited
             fragment.updated_by = user.id
         return fragment
 
-    # [新增] 允许原素材提供者补交晚到的 ASR，同时保护已引用的原文。
+    # 允许原素材提供者补交晚到的 ASR，同时保护已引用的原文。
     def save_fragment_raw_transcript(
         self,
         session: Session,
@@ -977,6 +1012,7 @@ class MemoryService:
                 lock=True,
                 expected_session_id=session_id,
             )
+            self._require_source_owner(memory, role)
             self._require_contribution(session, memory, user, role)
             author = session.get(MemoryContributor, fragment.contributor_id)
             if (
@@ -989,6 +1025,13 @@ class MemoryService:
             if fragment.source_type not in {"audio", "video"}:
                 raise HTTPException(status_code=422, detail="只支持为音频或视频片段补交原始转写")
             existing = fragment.transcript_raw
+            if memory.visibility is not None and fragment.source_type == "audio":
+                if not existing or not existing.strip():
+                    raise HTTPException(status_code=409, detail="等待服务端生成音频转写")
+                if body.transcript_segments:
+                    raise HTTPException(status_code=422, detail="音频时间定位由服务端生成")
+            elif memory.visibility is None and (body.narrator_user_id is not None or body.narrator_spans):
+                raise HTTPException(status_code=409, detail="叙述者标注需启用版本化会话")
             if existing and existing.strip() and existing != body.transcript_raw:
                 raise HTTPException(status_code=409, detail="已有原始转写，修改请使用校订文本")
             if existing != body.transcript_raw:
@@ -1010,6 +1053,7 @@ class MemoryService:
                 lock=True,
                 expected_session_id=session_id,
             )
+            self._require_source_owner(memory, role)
             self._require_material_edit(session, memory, user, role, fragment.contributor_id)
             now = datetime.now(timezone.utc)
             fragment.is_del = True
@@ -1297,6 +1341,7 @@ class MemoryService:
             "topic_title": topic_title,
             "title": row.title,
             "is_favorite": row.is_favorite,
+            "visibility": row.visibility,
             "last_recorded_at": row.last_material_at,
             "created_at": row.created_at,
             "fragment_count": len(fragments),

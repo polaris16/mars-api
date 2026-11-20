@@ -60,11 +60,13 @@ def test_reliability_and_schema_comments_generate_offline_postgresql_sql():
     output = StringIO()
     config = Config(str(project_root / "alembic.ini"), output_buffer=output)
     comments = ScriptDirectory.from_config(config).get_revision("20261119_12").module
+    updated_by_pipeline = {("t_life_entity", "entity_type"), ("t_memory_element_entity", "relation_type")}
     for table_name, (_, current) in comments.TABLE_COMMENTS.items():
         assert Base.metadata.tables[table_name].comment == current
     for table_name, columns in comments.COLUMN_COMMENTS.items():
         for field, _, current in columns:
-            assert Base.metadata.tables[table_name].c[field].comment == current
+            if (table_name, field) not in updated_by_pipeline:
+                assert Base.metadata.tables[table_name].c[field].comment == current
 
     command.upgrade(config, "20261119_10:20261119_12", sql=True)
     sql = output.getvalue()
@@ -81,3 +83,29 @@ def test_reliability_and_schema_comments_generate_offline_postgresql_sql():
     sql = output.getvalue()
     assert "COMMENT ON TABLE t_auth_session IS NULL" in sql
     assert "DROP COLUMN invitation_expires_at" in sql
+
+
+def test_versioned_memory_migration_creates_current_tables_and_constraints():
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261119_12:20261120_01", sql=True)
+    sql = output.getvalue()
+    tables = (
+        "t_memory_source_revision", "t_memory_draft_version", "t_memory_entity_candidate",
+        "t_memory_entity_resolution", "t_memory_entity_evidence",
+    )
+    for name in tables:
+        assert f"CREATE TABLE {name}" in sql
+        assert f"COMMENT ON TABLE {name}" in sql
+    assert "FOREIGN KEY(draft_version_id) REFERENCES t_memory_draft_version (id)" in sql
+    for table, column in (("t_life_entity", "entity_type"), ("t_memory_element_entity", "relation_type")):
+        assert f"COMMENT ON COLUMN {table}.{column} IS '{Base.metadata.tables[table].c[column].comment}'" in sql
+    assert "time_period" in sql
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261120_01:20261119_12", sql=True)
+    sql = output.getvalue()
+    assert "DROP CONSTRAINT fk_memory_element_draft" in sql
+    for name in tables:
+        assert f"DROP TABLE {name}" in sql

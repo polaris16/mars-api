@@ -18,6 +18,7 @@ from app.schemas.memory_extraction import (
     MemoryElementResponse,
     MemoryProvenanceResponse,
     ReviewStatus,
+    VerificationStatus,
 )
 from app.services.memory_extraction_service import (
     MemoryExtractionService,
@@ -100,6 +101,7 @@ def list_memory_elements(
     element_type: ElementType | None = None,
     review_status: ReviewStatus | None = None,
     origin: ElementOrigin | None = None,
+    verification_status: VerificationStatus | None = None,
 ) -> MemoryElementPage:
     return service.list_elements(
         db,
@@ -112,6 +114,7 @@ def list_memory_elements(
         element_type=element_type,
         review_status=review_status,
         origin=origin,
+        verification_status=verification_status,
     )
 
 

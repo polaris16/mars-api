@@ -18,8 +18,10 @@ from app.models import (
     AIProcessingJob,
     MediaAsset,
     MemoryContributor,
+    MemoryDraftVersion,
     MemoryElement,
     MemoryFragment,
+    MemorySourceRevision,
     User,
 )
 from app.schemas.memory_extraction import (
@@ -31,14 +33,20 @@ from app.schemas.memory_extraction import (
     MemoryElementResponse,
     MemoryProvenanceResponse,
     SourceKind,
+    StructuredElement,
 )
+from app.schemas.memory_processing import TextRange
+from app.services.draft_provenance import ExtractionDraft
+from app.services.memory_entities import MemoryEntityService
 from app.services.memory_service import MemoryService
+from app.services.memory_versions import active_draft, current_source, decode_paragraphs, paragraph_reference
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError, TextExtractionModel
 
 JOB_TYPE = "extract_memory_elements"
 EXTRACTOR_VERSION = "v1"
 ACTIVE_STATUSES = ("queued", "processing")
+MAX_ENTITY_QUOTE_LOCATIONS = 30
 _io_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="memory-extraction")
 _io_slots = BoundedSemaphore(8)
 
@@ -96,6 +104,7 @@ class Source:
     asset_id: int | None = None
     key: str | None = None
     size_bytes: int | None = None
+    draft_version_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +133,7 @@ class MemoryExtractionService:
 
     def _mock_scenario(self, parent: AIProcessingJob | None) -> MockExtractionScenario:
         scenario = self.settings.ai_text_mock_scenario
-        # [新增] 真实、取消或未生成兜底的旧任务仍按当前场景处理。
+        # 真实、取消或未生成兜底的旧任务仍按当前场景处理。
         if (
             scenario == "fallback"
             and parent is not None
@@ -210,6 +219,7 @@ class MemoryExtractionService:
             expected_session_id=session_id,
         )
         self.memories._require_material_edit(db, memory, requester, role, fragment.contributor_id)
+        self.memories._require_source_owner(memory, role)
         provider = db.get(MemoryContributor, fragment.contributor_id)
         if (
             provider is None
@@ -228,7 +238,14 @@ class MemoryExtractionService:
                 )
             ):
                 raise _problem(403, "SOURCE_PROVIDER_INELIGIBLE")
-        return self._source(db, fragment), provider.account_user_id
+        if memory.visibility is None:
+            return self._source(db, fragment), provider.account_user_id
+        revision = current_source(db, fragment.id)
+        draft = active_draft(db, revision.id) if revision is not None else None
+        if draft is None:
+            raise _problem(409, "DRAFT_REQUIRED")
+        text = ExtractionDraft(decode_paragraphs(draft)).text
+        return Source("draft_version", _digest(text), text=text, draft_version_id=draft.id), provider.account_user_id
 
     @staticmethod
     def _jobs(session_id: int):
@@ -251,6 +268,10 @@ class MemoryExtractionService:
             db, requester, session_id, fragment_id, lock=True
         )
         query = self._jobs(session_id).where(AIProcessingJob.source_fragment_id == fragment_id)
+        if source.draft_version_id is not None:
+            query = query.where(
+                AIProcessingJob.input_payload["draft_version_id"].as_integer() == source.draft_version_id
+            )
         jobs = query.order_by(AIProcessingJob.id.desc())
         parent = None
         if body.retry_of_job_id is not None:
@@ -319,8 +340,10 @@ class MemoryExtractionService:
             "model_scope": model_scope,
             "authorized_source_user_id": authorized_author,
         }
+        if source.draft_version_id is not None:
+            input_payload["draft_version_id"] = source.draft_version_id
         if not self.model.external:
-            # [新增] 配置切换只影响新任务，Worker 按任务自身的场景重试。
+            # 配置切换只影响新任务，Worker 按任务自身的场景重试。
             input_payload.update(model_provider="mock", mock_scenario=self._mock_scenario(parent))
         now = _now()
         job = AIProcessingJob(
@@ -334,7 +357,8 @@ class MemoryExtractionService:
             # Give the request its first attempt before an independent worker claims the task.
             available_at=now + timedelta(seconds=self.settings.ai_text_sync_wait_seconds),
             idempotency_key=_digest(
-                f"{fragment_id}:{source.kind}:{source.fingerprint}:{EXTRACTOR_VERSION}:{body.retry_of_job_id}"
+                f"{fragment_id}:{source.kind}:{source.fingerprint}:{EXTRACTOR_VERSION}:"
+                f"{source.draft_version_id or ''}:{body.retry_of_job_id}"
             ),
             input_payload=input_payload,
             created_by=requester.id,
@@ -346,7 +370,7 @@ class MemoryExtractionService:
         db.flush()
         return job.id, True
 
-    def _claim(self, db: Session, job_id: int | None) -> Claim | None:
+    def _claim(self, db: Session, job_id: int | None, job_type: str = JOB_TYPE) -> Claim | None:
         now = _now()
         with db.begin():
             claimable = or_(
@@ -361,7 +385,7 @@ class MemoryExtractionService:
                     AIProcessingJob.status == "queued", AIProcessingJob.attempt_count == 0
                 )
             query = select(AIProcessingJob).where(
-                AIProcessingJob.job_type == JOB_TYPE,
+                AIProcessingJob.job_type == job_type,
                 AIProcessingJob.is_del.is_(False),
                 claimable,
             )
@@ -420,6 +444,8 @@ class MemoryExtractionService:
         except HTTPException:
             raise ExtractionError("SOURCE_ACCESS_LOST") from None
         payload = job.input_payload
+        if source.draft_version_id != payload.get("draft_version_id"):
+            raise ExtractionError("SOURCE_CHANGED")
         if (source.kind, source.asset_id, source.fingerprint) != (
             payload.get("source_kind"),
             payload.get("source_asset_id"),
@@ -480,27 +506,87 @@ class MemoryExtractionService:
             db.flush()
         evidence = {}
         rows = []
+        draft_id = job.input_payload.get("draft_version_id")
+        draft = db.get(MemoryDraftVersion, draft_id) if draft_id is not None else None
+        references = ExtractionDraft(decode_paragraphs(draft)) if draft is not None else None
+        source = db.get(MemorySourceRevision, draft.source_revision_id) if draft is not None else None
+
         for sequence, (result, start) in enumerate(verified, start=1):
+            draft_refs = None
+            if references is not None:
+                draft_refs = self._draft_references(
+                    references, source, draft.id, start, len(result.source_quote)
+                )
             row = MemoryElement(
-                **result.model_dump(),
+                **result.model_dump(exclude={"entity_mentions"}),
                 session_id=job.session_id,
                 source_fragment_id=job.source_fragment_id,
                 processing_job_id=job.id,
                 sequence_no=sequence,
                 origin="extracted",
                 review_status="pending",
+                verification_status="pending" if draft is not None else None,
+                draft_version_id=draft_id,
+                draft_references=draft_refs,
                 created_by=job.requested_by_user_id,
                 updated_by=job.requested_by_user_id,
             )
             db.add(row)
-            rows.append((row, start))
+            rows.append((row, start, result))
         db.flush()
-        for row, start in rows:
+        for row, start, result in rows:
             evidence[str(row.id)] = {
                 "start_offset": start,
                 "end_offset": start + len(row.source_quote) if start is not None else None,
             }
+            if isinstance(result, StructuredElement) and source is not None:
+                possible_locations, truncated = [], False
+                narrator_by_mention = {}
+                if start is None and result.entity_mentions:
+                    possible_locations, truncated = self._possible_draft_locations(
+                        references, source, draft.id, result.source_quote
+                    )
+                elif result.entity_mentions:
+                    for mention in result.entity_mentions:
+                        name = mention.mention_text
+                        offset = result.source_quote.find(name)
+                        if offset >= 0 and result.source_quote.find(name, offset + 1) < 0:
+                            proof = self._draft_references(
+                                references, source, draft.id, start + offset, len(name)
+                            )
+                            narrator_by_mention[name] = MemoryEntityService.reference_narrator(proof)
+                MemoryEntityService().store_mentions(
+                    db, row, result, possible_locations=possible_locations,
+                    locations_truncated=truncated, narrator_by_mention=narrator_by_mention,
+                )
         return {"element_count": len(rows), "evidence": evidence}
+
+    @staticmethod
+    def _draft_references(content, source, draft_id, start, length) -> list[dict]:
+        if start is None:
+            return []
+        span = TextRange(start_offset=start, end_offset=start + length)
+        paragraphs = {item.id: item for item in content.paragraphs}
+        return [
+            paragraph_reference(
+                paragraphs[ref.paragraph_id], source, draft_id, [ref.text_range.model_dump()]
+            )
+            for ref in content.references(span)
+        ]
+
+    @classmethod
+    def _possible_draft_locations(cls, content, source, draft_id, quote) -> tuple[list[dict], bool]:
+        """重复引句的多个位置供本人选择，发布前不将其中一个当成确定来源。"""
+        text = content.text
+        offset = text.find(quote)
+        locations = []
+        while offset >= 0 and len(locations) < MAX_ENTITY_QUOTE_LOCATIONS:
+            locations.append({
+                "index": len(locations),
+                "draft_references": cls._draft_references(content, source, draft_id, offset, len(quote)),
+            })
+            offset = text.find(quote, offset + 1)
+        return locations, offset >= 0
 
     @staticmethod
     def _fallback(db: Session, job: AIProcessingJob, source_text: str) -> int | None:
@@ -523,6 +609,8 @@ class MemoryExtractionService:
             processing_job_id=job.id,
             sequence_no=1,
             origin="fallback",
+            draft_version_id=job.input_payload.get("draft_version_id"),
+            verification_status="pending" if job.input_payload.get("draft_version_id") else None,
             element_type="other",
             review_status="pending",
             summary=source_text.strip()[:160],
@@ -530,6 +618,12 @@ class MemoryExtractionService:
             created_by=job.requested_by_user_id,
             updated_by=job.requested_by_user_id,
         )
+        if fallback.draft_version_id is not None:
+            draft = db.get(MemoryDraftVersion, fallback.draft_version_id)
+            source = db.get(MemorySourceRevision, draft.source_revision_id)
+            fallback.draft_references = MemoryExtractionService._draft_references(
+                ExtractionDraft(decode_paragraphs(draft)), source, draft.id, 0, len(source_text)
+            )
         db.add(fallback)
         db.flush()
         return fallback.id
@@ -659,7 +753,11 @@ class MemoryExtractionService:
                 with db.begin():
                     self._recheck(db, self._claimed_job(db, claim), lock=False)
             extracted = _bounded_io(
-                lambda timeout: self.model.extract(text, timeout, **mock_options),
+                lambda timeout: (
+                    self.model.extract_structured(text, timeout, **mock_options)
+                    if source.draft_version_id
+                    else self.model.extract(text, timeout, **mock_options)
+                ),
                 deadline,
                 "MODEL_TIMEOUT",
             )
@@ -776,6 +874,7 @@ class MemoryExtractionService:
         element_type: str | None = None,
         review_status: str | None = None,
         origin: str | None = None,
+        verification_status: str | None = None,
     ) -> MemoryElementPage:
         self.memories._session_access(db, user.id, session_id)
         query = self._elements(session_id)
@@ -785,6 +884,7 @@ class MemoryExtractionService:
             (MemoryElement.element_type, element_type),
             (MemoryElement.review_status, review_status),
             (MemoryElement.origin, origin),
+            (MemoryElement.verification_status, verification_status),
         ):
             if value is not None:
                 query = query.where(column == value)
@@ -793,7 +893,7 @@ class MemoryExtractionService:
             query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size)
         )
         return MemoryElementPage(
-            items=[MemoryElementResponse.model_validate(row) for row in rows],
+            items=[self.element_response(db, row) for row in rows],
             page=page,
             page_size=page_size,
             total=total,
@@ -811,9 +911,14 @@ class MemoryExtractionService:
     def get_element(
         self, db: Session, user: User, session_id: int, element_id: int
     ) -> MemoryElementResponse:
-        return MemoryElementResponse.model_validate(
-            self._element(db, user.id, session_id, element_id)
-        )
+        return self.element_response(db, self._element(db, user.id, session_id, element_id))
+
+    @staticmethod
+    def element_response(db: Session, row: MemoryElement) -> MemoryElementResponse:
+        response = MemoryElementResponse.model_validate(row)
+        if row.draft_version_id is not None:
+            response.entities = MemoryEntityService.element_refs(db, row.id)
+        return response
 
     def get_provenance(
         self,
@@ -843,7 +948,15 @@ class MemoryExtractionService:
             source_quote=row.source_quote,
             start_offset=evidence.get("start_offset"),
             end_offset=evidence.get("end_offset"),
+            draft_references=row.draft_references or [],
         )
+        if row.draft_version_id is not None:
+            if row.origin == "fallback":
+                draft = db.get(MemoryDraftVersion, row.draft_version_id)
+                full_text = ExtractionDraft(decode_paragraphs(draft)).text
+                response.source_text = full_text
+                response.start_offset, response.end_offset = 0, len(full_text)
+            return response
         if row.origin == "fallback":
             source = self._source(db, db.get(MemoryFragment, row.source_fragment_id))
             if (source.kind, source.asset_id, source.fingerprint) != (

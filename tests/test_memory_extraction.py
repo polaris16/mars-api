@@ -21,19 +21,30 @@ from app.main import create_app
 from app.models import (
     AIProcessingJob,
     FragmentAttachment,
+    LifeEntity,
+    LifeEntityAlias,
     MediaAsset,
     MemoryContributor,
+    MemoryDraftVersion,
     MemoryElement,
+    MemoryElementEntity,
+    MemoryEntityCandidate,
+    MemoryEntityEvidence,
+    MemoryEntityResolution,
     MemoryFragment,
     MemorySession,
     MemorySessionMember,
+    MemorySourceRevision,
     Topic,
     TopicParticipant,
     User,
     UserRelationship,
 )
-from app.schemas.memory_extraction import ExtractedElement
+from app.schemas.memory_extraction import EntityMention, ExtractedElement, StructuredElement
+from app.services.audio_transcription import AudioTranscriptionModel
 from app.services.memory_extraction_service import MemoryExtractionService
+from app.services.memory_pipeline import MemoryPipelineService
+from app.services.narrative_organization import organize_narrative
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError, TextExtractionModel
 
@@ -61,24 +72,36 @@ def extraction_api(tmp_path, monkeypatch):
     @event.listens_for(engine, "connect")
     def add_functions(connection, _):
         connection.create_function("btrim", 1, str.strip)
-        connection.create_function(
-            "jsonb_typeof",
-            1,
-            lambda value: "object" if isinstance(json.loads(value), dict) else "null",
-        )
+        def jsonb_typeof(value):
+            parsed = json.loads(value) if value is not None else None
+            return "object" if isinstance(parsed, dict) else "array" if isinstance(parsed, list) else "null"
 
-    for model in (MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob):
+        connection.create_function("jsonb_typeof", 1, jsonb_typeof)
+        connection.create_function("jsonb_array_length", 1, lambda value: len(json.loads(value)))
+
+    version_models = (
+        MemorySourceRevision, MemoryDraftVersion, LifeEntity, LifeEntityAlias,
+        MemoryElementEntity, MemoryEntityCandidate, MemoryEntityResolution, MemoryEntityEvidence,
+    )
+    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob, *version_models):
         column = model.__table__.c.id
         monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
     for model, name in (
         (AIProcessingJob, "input_payload"),
         (AIProcessingJob, "result_payload"),
         (MemoryElement, "attribute_confidence"),
+        (MemoryElement, "draft_references"),
+        (LifeEntity, "attributes"),
+        (MemorySourceRevision, "transcript_segments"),
+        (MemoryDraftVersion, "paragraphs"),
+        (MemoryEntityCandidate, "evidence"),
+        (MemoryEntityCandidate, "candidate_entity_ids"),
+        (MemoryEntityEvidence, "evidence"),
     ):
         column = model.__table__.columns[name]
-        monkeypatch.setattr(column, "type", column.type.with_variant(JSON(), "sqlite"))
+        monkeypatch.setattr(column, "type", column.type.with_variant(JSON(none_as_null=True), "sqlite"))
         if column.server_default is not None:
-            monkeypatch.setattr(column.server_default, "arg", text("'{}'"))
+            monkeypatch.setattr(column.server_default, "arg", text(str(column.server_default.arg).split("::")[0]))
     for index in MemoryElement.__table__.indexes:
         if index.name == "uq_t_memory_element_fragment_sequence_active":
             monkeypatch.setitem(index.dialect_options["sqlite"], "where", text("is_del = false"))
@@ -109,6 +132,7 @@ def extraction_api(tmp_path, monkeypatch):
             TopicParticipant,
             AIProcessingJob,
             MemoryElement,
+            *version_models,
         )
         MemorySession.metadata.create_all(db, tables=[model.__table__ for model in models])
         db.execute(text("INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1)"))
@@ -156,6 +180,529 @@ def save_text(client, source="我在上海读书。", **fields):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_versioned_memory_processing_edit_and_entity_resolution(extraction_api):
+    client, factory = extraction_api
+    patched = client.patch(SESSION, headers=OWNER, json={"visibility": "private"})
+    assert patched.status_code == 200 and patched.json()["visibility"] == "private"
+    fragment = save_text(client, "我跟陈师傅学手艺。\n后来去了上海。")
+    root = f"{FRAGMENTS}/{fragment['id']}"
+    initial = client.get(f"{root}/processing", headers=OWNER).json()
+    assert initial["organization"]["status"] == "queued"
+    assert initial["upload_processed_at"] is None
+    assert client.post(f"{root}/extraction-jobs", headers=OWNER, json={}).status_code == 409
+    assert client.get(f"{root}/processing", headers=VIEWER).status_code == 404
+
+    pipeline = MemoryPipelineService()
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+        assert pipeline.extraction.run(db)
+    progress = client.get(f"{root}/processing", headers=OWNER).json()
+    assert progress["organization"]["status"] == progress["extraction"]["status"] == "succeeded"
+    assert progress["upload_processed_at"]
+    item = progress["extraction"]["elements"][0]
+    assert item["verification_status"] == "pending"
+    evidence = client.get(f"{ELEMENTS}/{item['id']}/provenance", headers=OWNER).json()
+    (reference,) = evidence["draft_references"]
+    assert reference["source_references"][0]["text_ranges"] == [{"start_offset": 0, "end_offset": 9}]
+
+    candidates = f"{SESSION}/entity-candidates"
+    (candidate,) = client.get(candidates, headers=OWNER).json()["items"]
+    assert candidate["mention_text"] == "陈师傅"
+    payload = {
+        "expected_revision": candidate["revision"], "action": "create_new", "canonical_name": "陈师傅",
+    }
+    resolve = f"{candidates}/{candidate['id']}/resolutions"
+    decision = client.post(resolve, headers=OWNER, json=payload)
+    assert decision.status_code == 201, decision.text
+    assert client.post(resolve, headers=OWNER, json=payload).json() == decision.json()
+    assert client.post(resolve, headers=OWNER, json={**payload, "canonical_name": "老陈"}).status_code == 409
+    entity_id = decision.json()["entity_id"]
+    assert client.get(f"{SESSION}/memory-entities/{entity_id}", headers=OWNER).json()["aliases"] == ["陈师傅"]
+    assert client.get(f"{SESSION}/memory-entities", headers=OWNER).json()["total"] == 1
+
+    draft_id = progress["draft_version_id"]
+    draft = client.get(f"{root}/draft-versions/{draft_id}", headers=OWNER).json()
+    first, second = draft["paragraphs"]
+    update = {
+        "source_revision_id": progress["source_revision_id"],
+        "base_version_id": draft_id,
+        "paragraphs": [
+            {"id": first["id"], "text": first["text"]},
+            {"id": second["id"], "text": "后来去了北京。"},
+        ],
+    }
+    headers = {**OWNER, "Idempotency-Key": str(uuid4())}
+    revised = client.post(f"{root}/draft-versions", headers=headers, json=update)
+    assert revised.status_code == 201, revised.text
+    assert client.post(f"{root}/draft-versions", headers=headers, json=update).json() == revised.json()
+    assert client.post(f"{root}/draft-versions", headers=OWNER, json=update).status_code == 409
+    assert client.get(f"{ELEMENTS}/{item['id']}", headers=OWNER).status_code == 404
+    with factory() as db:
+        assert pipeline.extraction.run(db)
+    new_items = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert new_items[0]["entities"][0]["id"] == entity_id
+    assert new_items[1]["summary"] == "后来去了北京。"
+    assert client.get(f"{root}/draft-versions", headers=OWNER).json()["total"] == 2
+
+
+def test_versioned_org_failed_job_can_retry_then_extraction_can_fallback(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    client.patch(SESSION, headers=OWNER, json={"visibility": "private"})
+    fragment = save_text(client, "我写下了一段回忆。")
+    root = f"{FRAGMENTS}/{fragment['id']}"
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ai_text_max_attempts", 1)
+    with factory.begin() as db:
+        job = db.scalar(select(AIProcessingJob).where(AIProcessingJob.source_fragment_id == fragment["id"]))
+        job.max_attempts = 1
+
+    def fail(*args, **kwargs):
+        raise ExtractionError("ORGANIZATION_UNREACHABLE", retryable=True)
+
+    pipeline = MemoryPipelineService()
+    with monkeypatch.context() as context:
+        context.setattr("app.services.memory_pipeline.organize_narrative", fail)
+        with factory() as db:
+            assert pipeline.run(db, "organization")
+    failed = client.get(f"{root}/processing", headers=OWNER).json()
+    assert failed["organization"]["status"] == "failed"
+    assert failed["upload_processed_at"] is None
+    body = {"stage": "organization", "retry_of_job_id": failed["organization"]["job_id"]}
+    retry = client.post(f"{root}/processing-jobs", headers=OWNER, json=body)
+    assert retry.status_code == 202, retry.text
+    assert client.post(f"{root}/processing-jobs", headers=OWNER, json=body).json() == retry.json()
+    monkeypatch.setattr(settings, "ai_text_mock_scenario", "fallback")
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+        assert pipeline.extraction.run(db)
+    failed_extraction = client.get(f"{root}/processing", headers=OWNER).json()["extraction"]
+    assert failed_extraction["status"] == "failed"
+    fallback_url = f"{ELEMENTS}/{failed_extraction['fallback_element_id']}/provenance"
+    fallback = client.get(fallback_url, headers=OWNER).json()
+    assert fallback["source_text"] == "我写下了一段回忆。"
+    assert fallback["draft_references"]
+
+
+def _open_versioned_text(client, factory, source, **fields):
+    assert client.patch(SESSION, headers=OWNER, json={"visibility": "private"}).status_code == 200
+    fragment = save_text(client, source, **fields)
+    pipeline = MemoryPipelineService()
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+        assert pipeline.extraction.run(db)
+    path = f"{FRAGMENTS}/{fragment['id']}"
+    progress = client.get(f"{path}/processing", headers=OWNER).json()
+    draft = client.get(f"{path}/draft-versions/{progress['draft_version_id']}", headers=OWNER).json()
+    return path, draft
+
+
+def _revise_last_paragraph(client, path, draft, text):
+    paragraphs = [{"id": item["id"], "text": item["text"]} for item in draft["paragraphs"]]
+    paragraphs[-1]["text"] = text
+    revised = client.post(f"{path}/draft-versions", headers=OWNER, json={
+        "source_revision_id": draft["source_revision_id"], "base_version_id": draft["id"],
+        "paragraphs": paragraphs,
+    })
+    assert revised.status_code == 201, revised.text
+    return revised.json()
+
+
+def test_automatic_entity_keeps_id_after_unrelated_paragraph_edit(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    quote = "我跟陈师傅学车床，他是一车间的车工。"
+
+    def extract(*_args, **_kwargs):
+        return [StructuredElement(
+            element_type="event", source_quote=quote, summary="我在一车间跟陈师傅学车床。",
+            entity_mentions=[EntityMention(
+                entity_type="person", mention_text="陈师傅", relation_type="participant",
+                identity_quote="陈师傅学车床，他是一车间的车工",
+            )],
+        )]
+
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", extract)
+    path, draft = _open_versioned_text(client, factory, f"{quote}\n后来我去了北京。")
+    (first,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    (entity,) = first["entities"]
+    revised = _revise_last_paragraph(client, path, draft, "后来我去了上海。")
+    with factory() as db:
+        assert MemoryExtractionService().run(db)
+    (new,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert new["draft_version_id"] == revised["id"]
+    assert new["entities"] == [entity]
+    detail = client.get(f"{SESSION}/memory-entities/{entity['id']}", headers=OWNER).json()
+    assert detail["evidence"][0]["draft_references"][0]["draft_version_id"] == revised["id"]
+
+
+def _confirm_fixture_entity(client, action, **target):
+    candidates = f"{SESSION}/entity-candidates"
+    (candidate,) = client.get(candidates, headers=OWNER).json()["items"]
+    response = client.post(f"{candidates}/{candidate['id']}/resolutions", headers=OWNER, json={
+        "expected_revision": candidate["revision"], "action": action, **target,
+    })
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _changed_summary(quote):
+    return [StructuredElement(
+        element_type="event", source_quote=quote, summary="那段时间我跟陈师傅学习。",
+        entity_mentions=[EntityMention(
+            entity_type="person", mention_text="陈师傅", relation_type="participant",
+        )],
+    )]
+
+
+def test_manual_entity_confirmation_survives_paraphrase_and_stays_in_fragment(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    quote = "那阵子跟陈师傅学习。"
+    path, draft = _open_versioned_text(client, factory, f"{quote}\n后来去了北京。")
+    confirmed = _confirm_fixture_entity(client, "create_new", canonical_name="陈师傅")
+    _revise_last_paragraph(client, path, draft, "后来去了上海。")
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", lambda *_a, **_kw: _changed_summary(quote))
+    with factory() as db:
+        assert MemoryExtractionService().run(db)
+    (item,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert item["summary"] == _changed_summary(quote)[0].summary
+    assert [entity["id"] for entity in item["entities"]] == [confirmed["entity_id"]]
+
+    other = save_text(client, f"那是我去二厂以后。\n{quote}")
+    pipeline = MemoryPipelineService()
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+        assert pipeline.extraction.run(db)
+    (unconfirmed,) = client.get(
+        ELEMENTS, params={"source_fragment_id": other["id"]}, headers=OWNER
+    ).json()["items"]
+    assert unconfirmed["entities"] == []
+    (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert candidate["element_id"] == unconfirmed["id"]
+
+
+def test_rejected_entity_match_survives_paraphrased_summary(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    _open_versioned_text(client, factory, "我跟陈师傅学手艺。")
+    known = _confirm_fixture_entity(client, "create_new", canonical_name="陈师傅")
+    quote = "那阵子跟陈师傅学习。"
+    path, draft = _open_versioned_text(client, factory, f"{quote}\n后来去了北京。")
+    rejection = _confirm_fixture_entity(client, "reject_match", entity_id=known["entity_id"])
+    assert rejection["status"] == "pending"
+    _revise_last_paragraph(client, path, draft, "后来去了上海。")
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", lambda *_a, **_kw: _changed_summary(quote))
+    with factory() as db:
+        assert MemoryExtractionService().run(db)
+    (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert candidate["candidate_entities"] == []
+
+
+def test_repeated_entity_quote_keeps_candidate_and_requires_location(extraction_api):
+    client, factory = extraction_api
+    quote = "我跟陈师傅学手艺。"
+    _, draft = _open_versioned_text(
+        client, factory, f"{quote}\n{quote}", narrator_spans=[{
+            "start_offset": len(quote) + 1, "end_offset": len(quote) * 2 + 1,
+            "narrator_user_id": 2,
+        }],
+    )
+    path = f"{SESSION}/entity-candidates"
+    (candidate,) = client.get(path, headers=OWNER).json()["items"]
+    evidence = candidate["evidence"]
+    assert evidence["location_status"] == "ambiguous"
+    assert candidate["narrator_user_id"] is None
+    assert evidence["draft_references"] == []
+    choices = evidence["possible_locations"]
+    assert [choice["draft_references"][0]["paragraph_id"] for choice in choices] == [
+        item["id"] for item in draft["paragraphs"]
+    ]
+    resolve = f"{path}/{candidate['id']}/resolutions"
+    decision = {
+        "expected_revision": candidate["revision"], "action": "create_new", "canonical_name": "陈师傅",
+    }
+    assert client.post(resolve, headers=OWNER, json=decision).status_code == 422
+    assert client.post(resolve, headers=OWNER, json={
+        **decision, "evidence_location_index": len(choices),
+    }).status_code == 422
+    decision["evidence_location_index"] = choices[1]["index"]
+    confirmed = client.post(resolve, headers=OWNER, json=decision)
+    assert confirmed.status_code == 201, confirmed.text
+    assert client.post(resolve, headers=OWNER, json=decision).json() == confirmed.json()
+    entity_id = confirmed.json()["entity_id"]
+    results = client.get(f"{SESSION}/memory-entities/{entity_id}", headers=OWNER).json()
+    (proof,) = results["evidence"]
+    assert proof["draft_references"] == choices[1]["draft_references"]
+    assert proof["narrator_user_id"] == 2
+    assert "possible_locations" not in proof
+
+
+def _save_versioned_text_file(client, factory, text):
+    raw = text.encode()
+    now = datetime.now(timezone.utc)
+    with factory.begin() as db:
+        db.add(MediaAsset(
+            id=25, uploaded_by_user_id=1, purpose="source", media_type="text",
+            storage_provider="mock", storage_region="local", bucket_name="test",
+            object_key="source.txt", content_type="text/plain", expected_size_bytes=len(raw),
+            size_bytes=len(raw), content_sha256=sha256(raw).hexdigest(), upload_status="uploaded",
+            uploaded_at=now, upload_expires_at=now,
+        ))
+    (ObjectStorageService("").local_root / "source.txt").write_bytes(raw)
+    assert client.patch(SESSION, headers=OWNER, json={"visibility": "private"}).status_code == 200
+    saved = client.post(
+        FRAGMENTS, headers=OWNER, json={"source_type": "text", "source_asset_id": 25},
+    )
+    assert saved.status_code == 201, saved.text
+    return f"{FRAGMENTS}/{saved.json()['id']}"
+
+
+def _save_first_manual_draft(client, path):
+    progress = client.get(f"{path}/processing", headers=OWNER).json()
+    assert progress["source_revision_id"] is not None
+    saved = client.post(f"{path}/draft-versions", headers=OWNER, json={
+        "source_revision_id": progress["source_revision_id"], "base_version_id": None,
+        "paragraphs": [{"text": "人工整理的正文。"}],
+    })
+    assert saved.status_code == 201, saved.text
+    return saved.json()
+
+
+def test_text_file_can_be_manually_organized_after_model_failure(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    path = _save_versioned_text_file(client, factory, "我在北京工作。")
+
+    def fail(*_args, **_kwargs):
+        raise ExtractionError("ORGANIZATION_OUTPUT_INVALID")
+
+    monkeypatch.setattr("app.services.memory_pipeline.organize_narrative", fail)
+    pipeline = MemoryPipelineService()
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+    progress = client.get(f"{path}/processing", headers=OWNER).json()
+    assert progress["organization"]["status"] == "failed"
+    assert progress["upload_processed_at"] is None
+    draft = _save_first_manual_draft(client, path)
+    assert draft["origin"] == "owner"
+    assert draft["source_revision_id"] == progress["source_revision_id"]
+    with factory() as db:
+        assert pipeline.extraction.run(db)
+    assert client.get(f"{path}/processing", headers=OWNER).json()["extraction"]["status"] == "succeeded"
+
+
+def test_automatic_organization_cannot_overwrite_concurrent_manual_draft(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    path = _save_versioned_text_file(client, factory, "我在北京工作。")
+    job_id = client.get(f"{path}/processing", headers=OWNER).json()["organization"]["job_id"]
+    drafts = []
+
+    def organize(model, source, timeout):
+        assert source == "我在北京工作。"
+        drafts.append(_save_first_manual_draft(client, path))
+        return organize_narrative(model, source, timeout)
+
+    monkeypatch.setattr("app.services.memory_pipeline.organize_narrative", organize)
+    with factory() as db:
+        assert MemoryPipelineService().run(db, "organization")
+        assert db.get(AIProcessingJob, job_id).status == "cancelled"
+    (manual,) = drafts
+    listing = client.get(f"{path}/draft-versions", headers=OWNER).json()
+    assert listing["active_version_id"] == manual["id"]
+    assert listing["total"] == 1
+
+
+def _finish_versioned_source(factory):
+    pipeline = MemoryPipelineService()
+    with factory() as db:
+        assert pipeline.run(db, "organization")
+        assert pipeline.extraction.run(db)
+
+
+def _enable_versioned_session(client):
+    reply = client.patch(SESSION, headers=OWNER, json={"visibility": "private"})
+    assert reply.status_code == 200, reply.text
+
+
+def test_app_transcript_persists_text_source_and_actual_narrator(extraction_api):
+    client, factory = extraction_api
+    _enable_versioned_session(client)
+    raw = "我跟陈师傅学手艺。"
+    fragment = save_text(client, raw, source_origin="app_asr", narrator_user_id=2)
+    _finish_versioned_source(factory)
+    path = f"{FRAGMENTS}/{fragment['id']}"
+    progress = client.get(f"{path}/processing", headers=OWNER).json()
+    assert progress["source_kind"] == "app_asr" and progress["asr"]["status"] == "skipped"
+    (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert candidate["narrator_user_id"] == 2
+    evidence = candidate["evidence"]["draft_references"][0]["source_references"][0]
+    assert evidence["source_kind"] == "app_asr"
+    assert evidence["source_asset_id"] is None and evidence["audio_ranges"] == []
+    assert evidence["text_ranges"] == [{"start_offset": 0, "end_offset": len(raw)}]
+    with factory() as db:
+        source = db.get(MemorySourceRevision, progress["source_revision_id"])
+        assert source.source_text == raw
+        assert source.created_by == 1 and source.transcript_segments[0]["narrator_user_id"] == 2
+        assert db.get(MemoryFragment, fragment["id"]).source_asset_id is None
+
+
+def test_narrator_span_overrides_default_and_scopes_relative_mentions(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    _enable_versioned_session(client)
+    quote = "前面是我姐姐讲的。接下来她说：我妈在厂里当老师。"
+    relative = "我妈"
+
+    def extract(*args, **kwargs):
+        return [StructuredElement(
+            element_type="fact", source_quote=quote, summary="转述母亲的工作。",
+            entity_mentions=[EntityMention(
+                entity_type="person", mention_text=relative, relation_type="participant",
+            )],
+        )]
+
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", extract)
+    for speaker in (2, 3):
+        save_text(client, quote, narrator_user_id=1, narrator_spans=[{
+            "start_offset": quote.index(relative), "end_offset": len(quote),
+            "narrator_user_id": speaker,
+        }])
+        _finish_versioned_source(factory)
+        (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+        assert candidate["narrator_user_id"] == speaker
+        assert candidate["candidate_entities"] == []
+        if speaker == 2:
+            _confirm_fixture_entity(client, "create_new", canonical_name="叙述者二的母亲")
+
+
+def test_narrator_metadata_requires_valid_character_ranges_and_accounts(extraction_api):
+    client, _ = extraction_api
+    _enable_versioned_session(client)
+    fields = {"source_type": "text", "content_text": "我的回忆。", "source_origin": "app_asr"}
+    bad_range = client.post(FRAGMENTS, headers=OWNER, json={
+        **fields, "narrator_spans": [{"start_offset": 0, "end_offset": 50, "narrator_user_id": 2}],
+    })
+    assert bad_range.status_code == 422 and bad_range.json()["detail"]["code"] == "NARRATOR_SPAN_OUT_OF_BOUNDS"
+    unknown = client.post(FRAGMENTS, headers=OWNER, json={**fields, "narrator_user_id": 999})
+    assert unknown.status_code == 422 and unknown.json()["detail"]["code"] == "NARRATOR_USER_INVALID"
+    audio_asset = client.post(FRAGMENTS, headers=OWNER, json={**fields, "source_asset_id": 25})
+    assert audio_asset.status_code == 422
+
+
+def _store_mock_audio(factory):
+    raw = b"RIFF" + b"\x00" * 4 + b"WAVE"
+    now = datetime.now(timezone.utc)
+    with factory.begin() as db:
+        db.add(MediaAsset(
+            id=25, uploaded_by_user_id=1, purpose="recording", media_type="audio",
+            storage_provider="mock", storage_region="local", bucket_name="test",
+            object_key="audio.wav", content_type="audio/wav", expected_size_bytes=len(raw),
+            size_bytes=len(raw), content_sha256=sha256(raw).hexdigest(), upload_status="uploaded",
+            uploaded_at=now, upload_expires_at=now,
+        ))
+    (ObjectStorageService("").local_root / "audio.wav").write_bytes(raw)
+
+
+@pytest.mark.parametrize("timestamps", [True, False])
+def test_uploaded_audio_uses_backend_asr_with_optional_intervals(extraction_api, monkeypatch, timestamps):
+    client, factory = extraction_api
+    _enable_versioned_session(client)
+    _store_mock_audio(factory)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ai_asr_enabled", True)
+    monkeypatch.setattr(settings, "ai_asr_provider", "mock")
+    monkeypatch.setattr(settings, "ai_asr_timestamps_enabled", timestamps)
+    fields = {"source_type": "audio", "source_asset_id": 25, "narrator_user_id": 2}
+    assert client.post(
+        FRAGMENTS, headers=OWNER, json={**fields, "transcript_raw": "App 转写"},
+    ).status_code == 422
+    saved = client.post(FRAGMENTS, headers=OWNER, json=fields)
+    assert saved.status_code == 201, saved.text
+    path = f"{FRAGMENTS}/{saved.json()['id']}"
+    assert client.put(
+        f"{path}/transcript-raw", headers=OWNER, json={"transcript_raw": "App 转写"},
+    ).status_code == 409
+
+    with factory() as db:
+        assert MemoryPipelineService().run(db, "asr")
+    _finish_versioned_source(factory)
+    progress = client.get(f"{path}/processing", headers=OWNER).json()
+    assert progress["source_kind"] == "server_asr"
+    assert progress["asr"]["status"] == "succeeded"
+    (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert candidate["narrator_user_id"] == 2
+    evidence = candidate["evidence"]["draft_references"][0]["source_references"][0]
+    assert evidence["source_asset_id"] == 25 and evidence["text_ranges"]
+    assert evidence["audio_ranges"] == ([{"start_ms": 0, "end_ms": 2000}] if timestamps else [])
+
+    transcript = client.get(path, headers=OWNER).json()["transcript_raw"]
+    corrected = client.put(f"{path}/transcript-raw", headers=OWNER, json={
+        "transcript_raw": transcript, "narrator_user_id": 3,
+    })
+    assert corrected.status_code == 200, corrected.text
+    _finish_versioned_source(factory)
+    (updated,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert updated["narrator_user_id"] == 3
+    proof = updated["evidence"]["draft_references"][0]["source_references"][0]
+    assert proof["audio_ranges"] == evidence["audio_ranges"]
+    assert proof["source_kind"] == "server_asr"
+
+
+def test_audio_narrator_survives_blocked_asr_and_manual_submit(extraction_api, monkeypatch):
+    client, factory = extraction_api
+    _enable_versioned_session(client)
+    _store_mock_audio(factory)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ai_asr_enabled", False)
+    monkeypatch.setattr(settings, "ai_asr_provider", "mock")
+    saved = client.post(FRAGMENTS, headers=OWNER, json={
+        "source_type": "audio", "source_asset_id": 25, "narrator_user_id": 2,
+    })
+    assert saved.status_code == 201, saved.text
+    path = f"{FRAGMENTS}/{saved.json()['id']}"
+    status = client.get(f"{path}/processing", headers=OWNER).json()["asr"]
+    assert status["status"] == "blocked" and status["reason_code"] == "PROCESSING_UNAVAILABLE"
+    monkeypatch.setattr(settings, "ai_asr_enabled", True)
+    submit = client.post(f"{path}/processing-jobs", headers=OWNER, json={"stage": "asr"})
+    assert submit.status_code == 202, submit.text
+    with factory() as db:
+        assert MemoryPipelineService().run(db, "asr")
+    _finish_versioned_source(factory)
+    (candidate,) = client.get(f"{SESSION}/entity-candidates", headers=OWNER).json()["items"]
+    assert candidate["narrator_user_id"] == 2
+
+
+def test_compatible_asr_requests_timestamps_and_aligns_provider_segments(monkeypatch):
+    settings = get_settings().model_copy(update={
+        "ai_asr_enabled": True, "ai_asr_provider": "openai-compatible",
+        "ai_asr_base_url": "https://asr.test/v1", "ai_asr_model": "asr-test",
+        "ai_asr_api_key": SecretStr("fake-test-key"), "ai_asr_timestamps_enabled": True,
+    })
+    requests = []
+    raw = {
+        "text": "前一句。\n后一句。",
+        "segments": [
+            {"text": "前一句。", "start": 0.1, "end": 1.25},
+            {"text": "后一句。", "start": 1.5, "end": 3},
+            {"text": "无法匹配的分段", "start": 3.5, "end": 4},
+        ],
+    }
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            requests.append((request.full_url, request.data))
+            return BytesIO(json.dumps(raw).encode())
+
+    monkeypatch.setattr("app.services.audio_transcription.build_opener", lambda *_: FakeOpener())
+    result = AudioTranscriptionModel(settings).transcribe(b"audio", "audio/wav", 1)
+    assert result.text == raw["text"]
+    assert [item.model_dump() for item in result.segments] == [
+        {"start_offset": 0, "end_offset": 4, "start_ms": 100, "end_ms": 1250},
+        {"start_offset": 5, "end_offset": 9, "start_ms": 1500, "end_ms": 3000},
+    ]
+    [(url, request)] = requests
+    assert url == "https://asr.test/v1/audio/transcriptions"
+    assert b'name="response_format"\r\n\r\nverbose_json' in request
+    assert b'name="timestamp_granularities[]"\r\n\r\nsegment' in request
+    raw.pop("segments")
+    assert AudioTranscriptionModel(settings).transcribe(b"audio", "audio/wav", 1).segments == ()
 
 
 def run_due_attempt(factory, job_id):

@@ -62,6 +62,16 @@ class MemoryElement(Base):
         ),
         Index("idx_t_memory_element_session_status", "session_id", "review_status", "id"),
         Index("idx_t_memory_element_job", "processing_job_id"),
+        Index("idx_memory_element_draft", "draft_version_id"),
+        Index("idx_memory_element_verification", "session_id", "verification_status"),
+        CheckConstraint(
+            "verification_status IN ('pending', 'verified', 'conflict')",
+            name="ck_memory_element_verification",
+        ),
+        CheckConstraint(
+            "draft_references IS NULL OR jsonb_typeof(draft_references) = 'array'",
+            name="ck_memory_element_draft_references",
+        ),
         {"comment": "结构化记忆元素及抽取失败保留的原文兜底"},
     )
 
@@ -85,6 +95,15 @@ class MemoryElement(Base):
         comment="产生该记忆元素的 AI 任务 ID",
     )
     sequence_no = Column(Integer, nullable=False, comment="同一来源片段内的元素顺序")
+    draft_version_id = Column(
+        BigInteger,
+        ForeignKey("t_memory_draft_version.id", name="fk_memory_element_draft", ondelete="CASCADE"),
+        comment="抽取时生效的整理稿版本 ID",
+    )
+    draft_references = Column(JSONB(none_as_null=True), comment="整理稿段落及段内引用位置")
+    verification_status = Column(
+        String(20), comment="系统验证状态，待核对、已验证或冲突，独立于人工核对"
+    )
     element_type = Column(
         String(30),
         nullable=False,

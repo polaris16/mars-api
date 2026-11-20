@@ -1,4 +1,4 @@
-"""Text model adapter for Stage 2 extraction."""
+"""记忆抽取及叙事整理共用的文本模型适配器。"""
 
 import json
 import re
@@ -8,7 +8,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.core.config import MockExtractionScenario, Settings
-from app.schemas.memory_extraction import ExtractedElement, ExtractedElements
+from app.schemas.memory_extraction import (
+    EntityMention, ExtractedElement, ExtractedElements, StructuredElement, StructuredElements,
+)
 
 
 class ExtractionError(Exception):
@@ -33,6 +35,14 @@ source_quote 必须是原文中的连续、逐字引句。没有可提取事实�
 可选字段为 exact_at（含时区时间戳）、time_start 和 time_end（YYYY-MM-DD）、
 time_description、location_description、overall_confidence、attribute_confidence。
 仅返回有原文依据的信息。未知值留空。置信度为 0 到 1。"""
+
+STRUCTURED_INSTRUCTIONS = EXTRACTION_INSTRUCTIONS + """
+每个元素可有 entity_mentions 数组，列出原文引句中的实体称谓。
+每项包含 entity_type（person、place、organization、time_period），逐字的 mention_text，
+relation_type（subject、participant、location、mentioned、other、time_period）。
+若原文明确说明称谓对应哪一位人物、地点、机构或具体阶段，提供逐字的 identity_quote，
+该引句必须出现在该元素的 source_quote 中，且须包含称谓与额外的身份依据。
+相对称谓或同名单独出现时保留提及，identity_quote 留空。不猜叙述者的身份。"""
 
 
 class TextExtractionModel:
@@ -75,11 +85,7 @@ class TextExtractionModel:
         if not self.available:
             raise ExtractionError("EXTRACTION_UNAVAILABLE")
         if not self.external:
-            # [删除-旧] 基础 Mock 只生成一条原文预览。
-            # Deterministic local fixture for front-end development. It does not infer facts.
-            # quote = source_text.strip()[:120]
-            # return [ExtractedElement(element_type="other", summary=quote, source_quote=quote)]
-            # [修改] 模拟模型结果或错误，任务状态与兜底仍由业务服务处理。
+            # 模拟模型结果或错误，任务状态与兜底仍由业务服务处理。
             if mock_scenario == "empty":
                 return []
             if mock_scenario == "fallback" or (
@@ -88,13 +94,26 @@ class TextExtractionModel:
                 raise ExtractionError("MODEL_TEMPORARY_ERROR", retryable=True)
             return self._mock_elements(source_text)
 
+        # 抽取和转写整理共用请求及响应大小校验。
+        content = self.complete_json(
+            EXTRACTION_INSTRUCTIONS, {"source_text": source_text}, timeout
+        )
+        try:
+            return ExtractedElements.model_validate_json(content).elements
+        except ValueError:
+            raise ExtractionError("MODEL_OUTPUT_INVALID") from None
+
+    def complete_json(self, instructions: str, inputs: dict[str, object], timeout: float) -> str:
+        """向已配置的外部文本模型请求 JSON，调用方负责检查素材处理授权。"""
+        if not (self.available and self.external):
+            raise ExtractionError("MODEL_UNAVAILABLE")
         body = {
             "model": self.settings.ai_text_model,
             "messages": [
-                {"role": "system", "content": EXTRACTION_INSTRUCTIONS},
+                {"role": "system", "content": instructions},
                 {
                     "role": "user",
-                    "content": json.dumps({"source_text": source_text}, ensure_ascii=False),
+                    "content": json.dumps(inputs, ensure_ascii=False),
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -125,9 +144,38 @@ class TextExtractionModel:
         try:
             data = json.loads(raw)
             content = data["choices"][0]["message"]["content"]
-            return ExtractedElements.model_validate_json(content).elements
         except (ValueError, KeyError, IndexError, TypeError):
             raise ExtractionError("MODEL_OUTPUT_INVALID") from None
+        if not isinstance(content, str):
+            raise ExtractionError("MODEL_OUTPUT_INVALID")
+        return content
+
+    def extract_structured(
+        self, source_text: str, timeout: float, **mock_options
+    ) -> list[StructuredElement]:
+        """从整理稿提出带原文约束的元素与实体候选。"""
+        if self.external:
+            content = self.complete_json(
+                STRUCTURED_INSTRUCTIONS, {"source_text": source_text}, timeout
+            )
+            try:
+                return StructuredElements.model_validate_json(content).elements
+            except ValueError:
+                raise ExtractionError("MODEL_OUTPUT_INVALID") from None
+
+        items = self.extract(source_text, timeout, **mock_options)
+        return [
+            StructuredElement(
+                **item.model_dump(),
+                entity_mentions=[
+                    EntityMention(
+                        entity_type="person", mention_text=name, relation_type="participant"
+                    )
+                    for name in list(dict.fromkeys(re.findall(r"[\u4e00-\u9fff]师傅", item.source_quote)))[:20]
+                ],
+            )
+            for item in items
+        ]
 
     @staticmethod
     def _mock_elements(source_text: str) -> list[ExtractedElement]:

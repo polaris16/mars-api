@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser
 from app.db.database import get_db
-from app.models import MemoryFragment, User
+from app.models import MemoryFragment, MemorySession, User
 from app.schemas.memory import (
     AttachmentBatchCreate,
     AttachmentPatch,
@@ -38,13 +38,14 @@ from app.services.memory_extraction_service import (
     MemoryExtractionService,
     get_memory_extraction_service,
 )
+from app.services.memory_pipeline import MemoryPipelineService
 from app.services.memory_service import MemoryService
 from app.services.object_storage_service import ObjectStorageService, get_object_storage_service
 
 router = APIRouter(tags=["recordings and media"])
 
 
-# [新增] 本地 Mock 存储签发的短时上传/下载 URL；由 token 授权具体对象操作。
+# 本地 Mock 存储签发的短时上传/下载 URL；由 token 授权具体对象操作。
 @router.put("/mock-storage/upload/{token}", include_in_schema=False)
 async def mock_storage_upload(
     token: str,
@@ -208,12 +209,7 @@ def delete_asset(
     return {"id": asset_id, "deleted": True}
 
 
-# [删除-旧] 片段创建只保存素材并返回片段。
-# @router.post("/recording-sessions/{session_id}/fragments", response_model=FragmentResponse, status_code=status.HTTP_201_CREATED, summary="保存语音片段和 ASR 转写")
-# def create_fragment(session_id: int, body: FragmentCreate, user: CurrentUser, db: Annotated[Session, Depends(get_db)], service: Annotated[MemoryService, Depends(MemoryService)], storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)]):
-#     fragment = service.create_fragment(db, user, session_id, body)
-#     return service.get_fragment(db, user, session_id, fragment.id, storage)
-# [新增] 保存片段与登记任务共用事务，提交后才调用模型。
+# 保存片段与登记任务共用事务，提交后才调用模型。
 @router.post(
     "/recording-sessions/{session_id}/fragments",
     response_model=FragmentCreatedResponse,
@@ -237,7 +233,7 @@ def create_fragment(
         service,
         storage,
         extraction,
-        body.allow_external_processing,
+        body,
         lambda enqueue: service.create_fragment(
             db, user, session_id, body, after_flush=enqueue, request_key=idempotency_key
         ),
@@ -251,7 +247,7 @@ def _save_material_with_extraction(
     service: MemoryService,
     storage: ObjectStorageService,
     extraction: MemoryExtractionService,
-    allow_external_processing: bool,
+    body: FragmentCreate | FragmentRawTranscriptUpdate,
     save: Callable[[Callable[[MemoryFragment], None]], MemoryFragment],
 ) -> dict:
     """保存入口共用任务登记和提交后的首次抽取。"""
@@ -263,6 +259,15 @@ def _save_material_with_extraction(
     def enqueue(fragment: MemoryFragment) -> None:
         nonlocal job_id, created, skip_reason, enqueue_called
         enqueue_called = True
+        if db.get(MemorySession, session_id).visibility is not None:
+            skip_reason = MemoryPipelineService(extraction.settings).prepare(
+                db, user, fragment, body.allow_external_processing, body.transcript_segments,
+                source_origin=getattr(body, "source_origin", None),
+                narration_changes=body.model_dump(
+                    mode="json", exclude_unset=True, include={"narrator_user_id", "narrator_spans"}
+                ),
+            )
+            return
         if not extraction.model.available:
             skip_reason = "EXTRACTION_UNAVAILABLE"
             return
@@ -272,7 +277,7 @@ def _save_material_with_extraction(
                 user,
                 session_id,
                 fragment.id,
-                ExtractionRequest(allow_external_processing=allow_external_processing),
+                ExtractionRequest(allow_external_processing=body.allow_external_processing),
             )
         except HTTPException as exc:
             if exc.status_code not in {403, 404, 409, 422, 503}:
@@ -290,7 +295,7 @@ def _save_material_with_extraction(
     if job_id is not None:
         result["extraction_job"] = extraction.get_job(db, user, session_id, job_id)
     elif not enqueue_called:
-        # [新增] 重发只读取片段的最新任务，不再启动一次抽取。
+        # 重发只读取片段的最新任务，不再启动一次抽取。
         jobs = extraction.list_jobs(db, user, session_id, fragment.id, page=1, page_size=1)
         result["extraction_job"] = jobs.items[0] if jobs.items else None
     result["extraction_skip_reason"] = skip_reason
@@ -348,7 +353,7 @@ def patch_fragment(
     return service.get_fragment(db, user, session_id, fragment_id, storage)
 
 
-# [新增] ASR 结果晚到时，前端在原片段补交并沿用抽取流程。
+# ASR 结果晚到时，前端在原片段补交并沿用抽取流程。
 @router.put(
     "/recording-sessions/{session_id}/fragments/{fragment_id}/transcript-raw",
     response_model=FragmentCreatedResponse,
@@ -371,7 +376,7 @@ def save_fragment_raw_transcript(
         service,
         storage,
         extraction,
-        body.allow_external_processing,
+        body,
         lambda enqueue: service.save_fragment_raw_transcript(
             db, user, session_id, fragment_id, body, after_flush=enqueue
         ),

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     db_connect_timeout: int = Field(default=10, gt=0)
     db_echo: bool = False
 
-    # [新增] 开发默认使用本地 Mock 存储；部署时明确切换为 s3。
+    # 开发默认使用本地 Mock 存储；部署时明确切换为 s3。
     object_storage_mode: Literal["mock", "s3"] = "mock"
     object_storage_mock_directory: str = ".local-media"
     object_storage_mock_secret: SecretStr = SecretStr("mars-local-mock-storage-only")
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Only the text model is used by Stage 2. The other model groups remain examples.
     ai_text_enabled: bool = False
     ai_text_provider: str = "mock"
-    # [新增] 场景仅用于登记 Mock 任务，已登记任务沿用自己的配置快照。
+    # 场景仅用于登记 Mock 任务，已登记任务沿用自己的配置快照。
     ai_text_mock_scenario: MockExtractionScenario = "success"
     ai_text_base_url: str = ""
     ai_text_api_key: SecretStr = SecretStr("")
@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     ai_text_timeout_seconds: float = Field(default=30, gt=0, le=180)
     ai_text_max_input_chars: int = Field(default=20000, ge=1, le=500000)
     ai_text_max_attempts: int = Field(default=3, ge=1, le=10)
+    memory_pipeline_enabled: bool = False
+    ai_asr_enabled: bool = False
+    ai_asr_provider: str = "mock"
+    ai_asr_base_url: str = ""
+    ai_asr_api_key: SecretStr = SecretStr("")
+    ai_asr_model: str = ""
+    ai_asr_timestamps_enabled: bool = False
+    ai_asr_max_audio_bytes: int = Field(default=25 * 1024 * 1024, gt=0, le=100 * 1024 * 1024)
 
     @property
     def database_url(self) -> URL:

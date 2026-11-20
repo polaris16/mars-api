@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import SessionLocal
 from app.services.memory_extraction_service import MemoryExtractionService
+from app.services.memory_pipeline import MemoryPipelineService
 
 
 def main() -> None:
@@ -17,12 +18,21 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     service = MemoryExtractionService()
-    if not service.model.available:
-        parser.exit(2, "AI text extraction is disabled or the provider is not configured.\n")
+    pipeline = MemoryPipelineService(service.settings)
+    if not (service.model.available or pipeline.asr.available):
+        parser.exit(2, "The AI text and ASR providers are unavailable.\n")
     while True:
         try:
             with SessionLocal() as db:
-                processed = service.run(db)
+                processed = False
+                for execute in (
+                    lambda: pipeline.run(db, "asr"),
+                    lambda: pipeline.run(db, "organization"),
+                    lambda: service.run(db),
+                ):
+                    processed = execute() or processed
+                    if processed and args.once:
+                        break
         except SQLAlchemyError:
             # Avoid logging query parameters or model input.
             logger.error("Memory extraction worker encountered a database error.")

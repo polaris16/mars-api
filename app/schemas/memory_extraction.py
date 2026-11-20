@@ -16,7 +16,8 @@ from pydantic import (
 ElementType = Literal["event", "fact", "life_stage", "other"]
 ElementOrigin = Literal["extracted", "fallback"]
 ReviewStatus = Literal["pending", "confirmed", "corrected", "cannot_remember", "rejected"]
-SourceKind = Literal["content_text", "transcript_raw", "text_file"]
+SourceKind = Literal["content_text", "transcript_raw", "text_file", "draft_version"]
+VerificationStatus = Literal["pending", "verified", "conflict"]
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 Id = Annotated[int, Field(gt=0, le=2**63 - 1)]
 
@@ -71,6 +72,9 @@ class MemoryElementResponse(BaseModel):
     overall_confidence: Confidence | None
     attribute_confidence: dict[str, Confidence]
     review_status: ReviewStatus
+    draft_version_id: int | None = None
+    verification_status: VerificationStatus | None = None
+    entities: list[dict] = Field(default_factory=list)
 
 
 class MemoryElementPage(BaseModel):
@@ -90,6 +94,7 @@ class MemoryProvenanceResponse(BaseModel):
     start_offset: int | None = None
     end_offset: int | None = None
     source_text: str | None = None
+    draft_references: list[dict] = Field(default_factory=list)
 
 
 class ExtractedElement(BaseModel):
@@ -128,3 +133,24 @@ class ExtractedElements(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     elements: list[ExtractedElement] = Field(max_length=30)
+
+
+class EntityMention(BaseModel):
+    """模型只提出称谓和身份线索，关联的判定由 Service 完成。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: Literal["person", "place", "organization", "time_period"]
+    mention_text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    relation_type: Literal["subject", "participant", "location", "mentioned", "other", "time_period"]
+    identity_quote: str | None = Field(default=None, max_length=500)
+
+
+class StructuredElement(ExtractedElement):
+    entity_mentions: list[EntityMention] = Field(default_factory=list, max_length=20)
+
+
+class StructuredElements(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    elements: list[StructuredElement] = Field(max_length=30)

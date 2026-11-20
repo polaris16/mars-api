@@ -15,10 +15,12 @@ from pydantic import (
 )
 
 from app.schemas.memory_extraction import ExtractionJobResponse
+from app.schemas.memory_processing import NarrationInput, TranscriptSegment
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 PG_INTEGER_MAX = (1 << 31) - 1
 PG_BIGINT_MAX = (1 << 63) - 1
+MemoryVisibility = Literal["public", "private", "secret"]
 
 
 class PageResponse(BaseModel):
@@ -32,6 +34,7 @@ class SessionCreate(BaseModel):
     title: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)
     ] = "未命名"
+    visibility: MemoryVisibility | None = None
 
 
 class SessionPatch(BaseModel):
@@ -41,6 +44,7 @@ class SessionPatch(BaseModel):
     ) = None
     topic_id: int | None = None
     is_favorite: bool | None = None
+    visibility: MemoryVisibility | None = None
 
     @model_validator(mode="after")
     def validate_non_nullable_fields(self):
@@ -48,6 +52,8 @@ class SessionPatch(BaseModel):
             raise ValueError("title 不能为 null")
         if "is_favorite" in self.model_fields_set and self.is_favorite is None:
             raise ValueError("is_favorite 不能为 null")
+        if "visibility" in self.model_fields_set and self.visibility is None:
+            raise ValueError("visibility 不能为 null")
         return self
 
 
@@ -59,6 +65,7 @@ class SessionSummary(BaseModel):
     topic_title: str | None = None
     title: str
     is_favorite: bool
+    visibility: MemoryVisibility | None = None
     # [UPDATED] Accept the persisted model name and the API response name while serializing consistently.
     last_recorded_at: datetime | None = Field(
         validation_alias=AliasChoices("last_recorded_at", "last_material_at")
@@ -121,7 +128,7 @@ class UploadAuthorizationResponse(BaseModel):
 
 
 class UploadCompleteRequest(BaseModel):
-    # [修改] 在接口层拒绝超出对应 PostgreSQL 字段范围的数值。
+    # 在接口层拒绝超出对应 PostgreSQL 字段范围的数值。
     duration_ms: int | None = Field(default=None, ge=0, le=PG_BIGINT_MAX)
     sample_rate_hz: int | None = Field(default=None, gt=0, le=PG_INTEGER_MAX)
 
@@ -145,18 +152,26 @@ class MediaAssetPage(PageResponse):
     items: list[MediaAssetResponse]
 
 
-class FragmentCreate(BaseModel):
+class FragmentCreate(NarrationInput):
     # [保留兼容] 原录音客户端继续提交 audio_asset_id。
     audio_asset_id: int | None = None
     source_type: Literal["text", "audio", "video"] = "audio"
+    # [新增] 无原声的 App 转写通过文字入口保存并标识来源。
+    source_origin: Literal["app_asr"] | None = None
     source_asset_id: int | None = None
     content_text: str | None = None
     transcript_raw: str | None = None
     recorded_at: datetime | None = None
     allow_external_processing: StrictBool = False
+    transcript_segments: list[TranscriptSegment] = Field(default_factory=list, max_length=10_000)
 
     @model_validator(mode="after")
     def validate_source(self):
+        if self.source_origin == "app_asr" and (
+            self.source_type != "text" or not (self.content_text and self.content_text.strip())
+            or self.source_asset_id is not None or self.transcript_raw is not None
+        ):
+            raise ValueError("App 本地转写需用 content_text 提交，且不关联原声")
         if self.audio_asset_id is not None:
             if self.source_asset_id is not None and self.source_asset_id != self.audio_asset_id:
                 raise ValueError("audio_asset_id 与 source_asset_id 不可冲突")
@@ -170,6 +185,10 @@ class FragmentCreate(BaseModel):
             raise ValueError("audio 类型必须提供 source_asset_id")
         if self.source_type == "video" and self.source_asset_id is None:
             raise ValueError("video 类型必须提供 source_asset_id")
+        if self.transcript_segments and (
+            self.source_type == "text" or not self.transcript_raw or not self.transcript_raw.strip()
+        ):
+            raise ValueError("转写时间定位需要音频或视频及非空原始转写")
         if (
             self.source_type == "text"
             and not (self.content_text and self.content_text.strip())
@@ -183,11 +202,12 @@ class FragmentPatch(BaseModel):
     transcript_edited: str | None
 
 
-class FragmentRawTranscriptUpdate(BaseModel):
+class FragmentRawTranscriptUpdate(NarrationInput):
     model_config = ConfigDict(extra="forbid")
 
     transcript_raw: str
     allow_external_processing: StrictBool = False
+    transcript_segments: list[TranscriptSegment] = Field(default_factory=list, max_length=10_000)
 
     @field_validator("transcript_raw")
     @classmethod
@@ -240,8 +260,6 @@ class FragmentResponse(BaseModel):
     transcript_raw: str | None
     transcript_edited: str | None
     recorded_at: datetime
-    # [移除] 旧客户端仍可读取 audio；非音频片段为 null。
-    # audio: MediaAssetResponse | None = None
     attachments: list[AttachmentResponse] = Field(default_factory=list)
 
 

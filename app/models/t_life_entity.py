@@ -23,7 +23,8 @@ class LifeEntity(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_life_entity_pkey"),
         CheckConstraint(
-            "entity_type IN ('person', 'place', 'organization')", name="ck_t_life_entity_type"
+            "entity_type IN ('person', 'place', 'organization', 'time_period')",
+            name="ck_t_life_entity_type",
         ),
         CheckConstraint(
             "jsonb_typeof(attributes) = 'object'", name="ck_t_life_entity_attributes_object"
@@ -40,7 +41,8 @@ class LifeEntity(Base):
         comment="人生图谱所有者的用户 ID",
     )
     entity_type = Column(
-        String(24), nullable=False, comment="实体类型：person 人物、place 地点、organization 机构"
+        String(24), nullable=False,
+        comment="实体类型：person 人物、place 地点、organization 机构、time_period 时间段"
     )
     canonical_name = Column(String(200), nullable=False, comment="实体归一化后的标准名称")
     relationship_to_author = Column(

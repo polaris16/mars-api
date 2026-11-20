@@ -105,6 +105,10 @@ class MemorySessionMemberService:
         memory = self.get_memory_session(session, session_id, lock=lock)
         if memory.owner_user_id == user_id:
             return memory, None
+        if memory.visibility == "secret":
+            raise HTTPException(status_code=404, detail="记忆会话不存在")
+        if memory.visibility is not None:
+            raise HTTPException(status_code=403, detail="只有会话所有者可以管理授权")
         member = session.scalar(
             select(MemorySessionMember).where(
                 MemorySessionMember.session_id == session_id,
@@ -140,6 +144,11 @@ class MemorySessionMemberService:
         member: MemorySessionMember,
         now: datetime,
     ) -> bool:
+        memory = session.get(MemorySession, member.session_id)
+        if memory is None or memory.is_del or memory.visibility == "secret":
+            return False
+        if memory.visibility is not None and member.source_relationship_id is None:
+            return False
         return (
             not member.is_del
             and self._current_status(member, now) == "active"
@@ -217,6 +226,11 @@ class MemorySessionMemberService:
             )
             if body.user_id == memory.owner_user_id:
                 raise HTTPException(status_code=422, detail="会话主人无需成员授权")
+            if memory.visibility is not None:
+                if body.source_relationship_id is None:
+                    raise HTTPException(status_code=422, detail="授权需要有效直接关系")
+                if body.role == "editor" or body.can_manage_members:
+                    raise HTTPException(status_code=422, detail="本期编辑和成员管理限会话所有者")
             if body.can_manage_members and body.role != "delegate":
                 raise HTTPException(status_code=422, detail="只有代理角色可以管理成员")
             if actor_id != memory.owner_user_id and body.role == "delegate":

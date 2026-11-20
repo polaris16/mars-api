@@ -3,8 +3,6 @@
 from app.models.base import Base
 from app.models.t_auth_session import AuthSession
 from app.models.t_interest_domain import InterestDomain
-
-# [新增] 录音、语音片段及可复用媒体对象模型，供 Alembic 加载。
 from app.models.t_fragment_attachment import FragmentAttachment
 from app.models.t_media_asset import MediaAsset
 from app.models.t_memory_fragment import MemoryFragment
@@ -23,10 +21,15 @@ from app.models.t_life_entity import LifeEntity
 from app.models.t_life_entity_alias import LifeEntityAlias
 from app.models.t_memory_element_entity import MemoryElementEntity
 from app.models.t_memory_conflict import MemoryConflict
+from app.models.t_memory_source_revision import MemorySourceRevision
+from app.models.t_memory_draft_version import MemoryDraftVersion
+from app.models.t_memory_entity_candidate import MemoryEntityCandidate
+from app.models.t_memory_entity_resolution import MemoryEntityResolution
+from app.models.t_memory_entity_evidence import MemoryEntityEvidence
 
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
-# [新增] 将录音与媒体模型注册到公开导出列表。
+# 将录音与媒体模型注册到公开导出列表。
 __all__ = [
     "Base",
     "User",
@@ -49,4 +52,9 @@ __all__ = [
     "LifeEntityAlias",
     "MemoryElementEntity",
     "MemoryConflict",
+    "MemorySourceRevision",
+    "MemoryDraftVersion",
+    "MemoryEntityCandidate",
+    "MemoryEntityResolution",
+    "MemoryEntityEvidence",
 ]

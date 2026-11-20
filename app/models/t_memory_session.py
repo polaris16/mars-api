@@ -3,6 +3,7 @@
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -19,6 +20,10 @@ class MemorySession(Base):
     __tablename__ = "t_memory_session"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_memory_session_pkey"),
+        CheckConstraint(
+            "visibility IN ('public', 'private', 'secret')",
+            name="ck_t_memory_session_visibility",
+        ),
         Index(
             "idx_t_memory_session_owner_last_material",
             "owner_user_id",
@@ -42,6 +47,8 @@ class MemorySession(Base):
         comment="关联话题ID",
     )
     title = Column(String(100), nullable=False, server_default=text("'未命名'"), comment="会话标题")
+    # 空值保留已存在会话的兼容授权和处理方式。
+    visibility = Column(String(10), comment="记忆可见性，空值表示存量会话")
     is_favorite = Column(Boolean, nullable=False, server_default=text("false"), comment="是否收藏")
     last_material_at = Column(
         DateTime(timezone=True), nullable=True, comment="未删除片段中最晚的记录时间，无片段时为空"

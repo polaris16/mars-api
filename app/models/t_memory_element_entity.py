@@ -23,7 +23,7 @@ class MemoryElementEntity(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_memory_element_entity_pkey"),
         CheckConstraint(
-            "relation_type IN ('subject', 'participant', 'location', 'mentioned', 'other')",
+            "relation_type IN ('subject', 'participant', 'location', 'mentioned', 'other', 'time_period')",
             name="ck_t_memory_element_entity_relation_type",
         ),
         CheckConstraint(
@@ -63,7 +63,7 @@ class MemoryElementEntity(Base):
         String(24),
         nullable=False,
         server_default=text("'mentioned'"),
-        comment="实体角色：subject 主体、participant 参与者、location 地点、mentioned 提及、other 其他",
+        comment="实体角色：主体、参与者、地点、提及、其他或 time_period 时间段",
     )
     confidence = Column(Numeric(5, 4), nullable=True, comment="元素与实体关联的置信度，取值 0 至 1")
     evidence_text = Column(Text, nullable=True, comment="支持此关联的原文证据")
