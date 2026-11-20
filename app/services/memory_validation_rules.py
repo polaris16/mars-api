@@ -85,7 +85,10 @@ class Claim:
     anchor: EventAnchor
 
 
-def current_records(db: Session, owner_id: int, element_id: int | None = None) -> dict[int, Record]:
+# [删除-旧] def current_records(db: Session, owner_id: int, element_id: int | None = None) -> dict[int, Record]:
+def current_records(
+    db: Session, owner_id: int, element_id: int | None = None, *, session_id: int | None = None,
+) -> dict[int, Record]:
     """只返回仍属于该所有者、引用最新文章和可用原文的元素。"""
     newer_source = aliased(MemorySourceRevision)
     newer_draft = aliased(MemoryDraftVersion)
@@ -146,6 +149,9 @@ def current_records(db: Session, owner_id: int, element_id: int | None = None) -
     )
     if element_id is not None:
         query = query.where(MemoryElement.id == element_id)
+    # [新增] 单会话图谱仅查询指定会话的现行版本。
+    if session_id is not None:
+        query = query.where(MemorySession.id == session_id)
     contributors = MemoryContributorService()
     return {
         element.id: Record(element, source, draft)
@@ -335,7 +341,7 @@ def _context_without_dates(quote: str) -> str:
 
 
 def collect_claims(
-    db: Session, record: Record, pending: set[int]
+    db: Session, record: Record, pending: set[int], *, visible_entities: list[dict] | None = None,
 ) -> tuple[list[Claim], str | None]:
     row = record.element
     if row.origin == "fallback":
@@ -350,7 +356,9 @@ def collect_claims(
         return [], "source_unconfirmed"
     if row.id in pending:
         return [], "entity_unconfirmed"
-    entities = MemoryEntityService.element_refs(db, row.id)
+    # [删除-旧] entities = MemoryEntityService.element_refs(db, row.id)
+    # [新增] 单会话候选由当前会话引句提供，避免使用跨会话归一后的身份。
+    entities = visible_entities if visible_entities is not None else MemoryEntityService.element_refs(db, row.id)
     locations = place_values(quote, entities)
     values = list(locations)
     parsed_time = time_value(quote)
@@ -494,13 +502,17 @@ def group_claims(
     db: Session,
     records: dict[int, Record],
     groups: dict[tuple[str, str], MemoryConflictGroup],
+    *, visible_entities: dict[int, list[dict]] | None = None,
 ) -> tuple[dict[str, EventClaims], dict[int, str | None], set[int]]:
     """[新增] 同一组的各描述直接相似才加入，按当前证据尽量保留原归组键。"""
-    pending = pending_entities(db, list(records))
+    # [删除-旧] pending = pending_entities(db, list(records))
+    pending = pending_entities(db, list(records)) if visible_entities is None else set()
     reasons = {}
     exact = defaultdict(list)
     for element_id, record in records.items():
-        claims, reasons[element_id] = collect_claims(db, record, pending)
+        # [删除-旧] claims, reasons[element_id] = collect_claims(db, record, pending)
+        local_refs = visible_entities.get(element_id, []) if visible_entities is not None else None
+        claims, reasons[element_id] = collect_claims(db, record, pending, visible_entities=local_refs)
         for claim in claims:
             exact[claim.event_key].append(claim)
 

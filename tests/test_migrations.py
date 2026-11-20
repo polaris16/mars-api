@@ -156,3 +156,42 @@ def test_memory_conflict_review_migration_orders_foreign_keys_and_keeps_history(
     )
     assert "DROP TABLE t_memory_element;" not in downgrade_sql
     assert "DROP TABLE t_memory_conflict;" not in downgrade_sql
+
+
+def test_graph_event_migration_creates_only_nodes_and_versioned_members():
+    """[新增] 核对第五阶段的离线升级、归组约束和回退依赖顺序。"""
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261120_02:20261121_01", sql=True)
+    upgrade_sql = output.getvalue()
+    event = "t_memory_graph_event"
+    member = "t_memory_graph_event_element"
+    assert upgrade_sql.count("CREATE TABLE ") == 2
+    assert upgrade_sql.index(f"CREATE TABLE {event} (") < upgrade_sql.index(f"CREATE TABLE {member} (")
+    assert "CONSTRAINT uq_memory_graph_event_owner_anchor UNIQUE (owner_user_id, anchor_key)" in upgrade_sql
+    assert (
+        f"CREATE UNIQUE INDEX uq_memory_graph_member_active_element ON {member} (element_id) "
+        "WHERE is_del = false AND status = 'active'"
+    ) in upgrade_sql
+    assert "CONSTRAINT ck_memory_graph_member_identity_basis CHECK" in upgrade_sql
+    assert "membership_basis = 'source' AND identity_group_id IS NULL" in upgrade_sql
+    assert "membership_basis = 'confirmed_same_event' AND identity_group_id IS NOT NULL" in upgrade_sql
+    assert "FOREIGN KEY(draft_version_id) REFERENCES t_memory_draft_version (id) ON DELETE RESTRICT" in upgrade_sql
+    for table in (event, member):
+        assert f"COMMENT ON TABLE {table} IS" in upgrade_sql
+        for column in Base.metadata.tables[table].c:
+            assert f"COMMENT ON COLUMN {table}.{column.name} IS '{column.comment}'" in upgrade_sql
+    assert "ALTER TABLE" not in upgrade_sql
+    assert "INSERT INTO" not in upgrade_sql
+    assert "DELETE FROM" not in upgrade_sql
+    assert [line for line in upgrade_sql.splitlines() if line.startswith("UPDATE ")] == [
+        "UPDATE alembic_version SET version_num='20261121_01' WHERE alembic_version.version_num = '20261120_02';"
+    ]
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261121_01:20261120_02", sql=True)
+    assert [line for line in output.getvalue().splitlines() if line.startswith("DROP TABLE ")] == [
+        f"DROP TABLE {member};",
+        f"DROP TABLE {event};",
+    ]

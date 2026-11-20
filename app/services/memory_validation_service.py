@@ -18,6 +18,7 @@ from app.models import (
     MemorySession,
     MemoryValidationJob,
 )
+from app.services.memory_graph_publication import publish_graph
 from app.services import memory_validation_queue as queue
 from app.services.memory_validation_rules import (
     Claim,
@@ -325,6 +326,8 @@ class MemoryValidationService:
                     )
                     return True
                 self._publish(db, job, records)
+                # [新增] 核验与图谱版本在同一事务内发布，租约到期一起回滚。
+                publish_graph(db, job, records)
                 now = datetime.now(timezone.utc)
                 if queue.lease_end(job) <= now:
                     # 回滚计算结果，让下一次领取者从当前快照重跑。

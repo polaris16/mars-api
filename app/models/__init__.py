@@ -34,6 +34,10 @@ from app.models.t_memory_review_question import MemoryReviewQuestion
 from app.models.t_memory_review_answer import MemoryReviewAnswer
 from app.models.t_memory_validation_job import MemoryValidationJob
 
+# [新增] 第五阶段图谱事件及版本化成员表。
+from app.models.t_memory_graph_event import MemoryGraphEvent
+from app.models.t_memory_graph_event_element import MemoryGraphEventElement
+
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
 # 将录音与媒体模型注册到公开导出列表。
@@ -70,4 +74,7 @@ __all__ = [
     "MemoryReviewQuestion",
     "MemoryReviewAnswer",
     "MemoryValidationJob",
+    # [新增] 图谱事件节点和成员证据。
+    "MemoryGraphEvent",
+    "MemoryGraphEventElement",
 ]

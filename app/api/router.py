@@ -12,6 +12,8 @@ from app.api.endpoints.memory_extraction import router as memory_extraction_rout
 from app.api.endpoints.memory_processing import router as memory_processing_router
 # [新增] 第四阶段回忆录核对接口。
 from app.api.endpoints.memory_review import router as memory_review_router
+# [新增] 第五阶段图谱只读接口。
+from app.api.endpoints.memory_graph import router as memory_graph_router
 from app.api.endpoints.memory_contributors import router as memory_contributors_router
 from app.api.endpoints.memory_session_members import router as memory_session_members_router
 
@@ -26,5 +28,6 @@ api_router.include_router(memories_router)  # 注册录音与素材管理路由�
 api_router.include_router(memory_extraction_router)
 api_router.include_router(memory_processing_router)
 api_router.include_router(memory_review_router)  # [新增] 注册回忆录级核对与复验。
+api_router.include_router(memory_graph_router)
 api_router.include_router(memory_session_members_router)
 api_router.include_router(memory_contributors_router)

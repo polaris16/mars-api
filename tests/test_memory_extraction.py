@@ -10,7 +10,7 @@ import pytest
 from fastapi import Depends, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import JSON, Integer, create_engine, event, select, text
+from sqlalchemy import JSON, CheckConstraint, Integer, create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -35,6 +35,8 @@ from app.models import (
     MemoryEntityEvidence,
     MemoryEntityResolution,
     MemoryFragment,
+    MemoryGraphEvent,
+    MemoryGraphEventElement,
     MemoryReviewAnswer,
     MemoryReviewQuestion,
     MemorySession,
@@ -95,9 +97,11 @@ def extraction_api(tmp_path, monkeypatch):
         MemoryConflictGroup, MemoryConflictEvidence, MemoryReviewQuestion, MemoryReviewAnswer,
         MemoryValidationJob, MemoryConflict,
     )
+    graph_models = (MemoryGraphEvent, MemoryGraphEventElement)
     # [删除-旧] for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob, *version_models):
-    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement,
-                  AIProcessingJob, *version_models, *validation_models):
+    # [新增] 图谱共享测试通过用户关系接口发起真实授权流程。
+    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, UserRelationship,
+                  AIProcessingJob, *version_models, *validation_models, *graph_models):
         column = model.__table__.c.id
         monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
     for model, name in (
@@ -129,11 +133,17 @@ def extraction_api(tmp_path, monkeypatch):
     for index in MemoryElement.__table__.indexes:
         if index.name == "uq_t_memory_element_fragment_sequence_active":
             monkeypatch.setitem(index.dialect_options["sqlite"], "where", text("is_del = false"))
-    for model in validation_models:
+    # [删除-旧] for model in validation_models:
+    for model in (UserRelationship, *validation_models, *graph_models):
         for index in model.__table__.indexes:
             predicate = index.dialect_options["postgresql"].get("where")
             if predicate is not None:
                 monkeypatch.setitem(index.dialect_options["sqlite"], "where", predicate)
+    for model in graph_models:
+        for constraint in model.__table__.constraints:
+            if isinstance(constraint, CheckConstraint) and " ~ " in str(constraint.sqltext):
+                # SQLite 用 REGEXP 提供同样的指纹格式检查。
+                monkeypatch.setattr(constraint, "sqltext", text(str(constraint.sqltext).replace(" ~ ", " REGEXP ")))
     with engine.begin() as db:
         db.execute(
             text("""CREATE TABLE t_user (
@@ -163,6 +173,7 @@ def extraction_api(tmp_path, monkeypatch):
             MemoryElement,
             *version_models,
             *validation_models,
+            *graph_models,
         )
         MemorySession.metadata.create_all(db, tables=[model.__table__ for model in models])
         db.execute(text("INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1)"))

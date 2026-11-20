@@ -17,6 +17,9 @@ TABLE_NAMES = {
     "t_memory_review_question",
     "t_memory_review_answer",
     "t_memory_validation_job",
+    # [新增] 第五阶段的稳定节点和成员证据。
+    "t_memory_graph_event",
+    "t_memory_graph_event_element",
 }
 
 
@@ -72,6 +75,17 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
             "t_user.id", "t_memory_review_question.id", "t_memory_validation_job.id",
         },
         "t_memory_validation_job": {"t_user.id", "t_memory_element.id", "t_memory_validation_job.id"},
+        # [新增] 节点和成员分别引用发布任务、依据和来源版本。
+        "t_memory_graph_event": {"t_user.id", "t_memory_validation_job.id"},
+        "t_memory_graph_event_element": {
+            "t_memory_graph_event.id",
+            "t_memory_element.id",
+            "t_memory_source_revision.id",
+            "t_memory_draft_version.id",
+            "t_memory_conflict_group.id",
+            "t_memory_review_answer.id",
+            "t_memory_validation_job.id",
+        },
     }
 
     for table_name, expected_targets in expected_foreign_keys.items():
@@ -91,6 +105,7 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
         "t_memory_conflict_evidence",
         "t_memory_review_question",
         "t_memory_validation_job",
+        "t_memory_graph_event_element",
     ):
         indexes = Base.metadata.tables[table_name].indexes
         assert any(
