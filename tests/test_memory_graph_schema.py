@@ -11,6 +11,12 @@ TABLE_NAMES = {
     "t_life_entity_alias",
     "t_memory_element_entity",
     "t_memory_conflict",
+    # [新增] 第四阶段的冲突、固定版本问答及核验队列。
+    "t_memory_conflict_group",
+    "t_memory_conflict_evidence",
+    "t_memory_review_question",
+    "t_memory_review_answer",
+    "t_memory_validation_job",
 }
 
 
@@ -46,11 +52,26 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
             "t_memory_fragment.id",
             "t_ai_processing_job.id",
             "t_user.id",
+            "t_memory_validation_job.id",
         },
         "t_life_entity": {"t_user.id", "t_memory_fragment.id"},
         "t_life_entity_alias": {"t_life_entity.id", "t_memory_fragment.id"},
         "t_memory_element_entity": {"t_memory_element.id", "t_life_entity.id"},
         "t_memory_conflict": {"t_memory_element.id", "t_ai_processing_job.id", "t_user.id"},
+        # [新增] 检查引用完整性，包括两处延后创建的循环外键。
+        "t_memory_conflict_group": {"t_user.id", "t_memory_review_answer.id"},
+        "t_memory_conflict_evidence": {
+            "t_memory_conflict_group.id",
+            "t_memory_element.id",
+            "t_memory_source_revision.id",
+            "t_memory_draft_version.id",
+            "t_memory_review_answer.id",
+        },
+        "t_memory_review_question": {"t_memory_conflict_group.id", "t_memory_validation_job.id"},
+        "t_memory_review_answer": {
+            "t_user.id", "t_memory_review_question.id", "t_memory_validation_job.id",
+        },
+        "t_memory_validation_job": {"t_user.id", "t_memory_element.id", "t_memory_validation_job.id"},
     }
 
     for table_name, expected_targets in expected_foreign_keys.items():
@@ -66,6 +87,10 @@ def test_memory_graph_foreign_keys_and_partial_unique_indexes():
         "t_life_entity_alias",
         "t_memory_element_entity",
         "t_memory_conflict",
+        "t_memory_conflict_group",
+        "t_memory_conflict_evidence",
+        "t_memory_review_question",
+        "t_memory_validation_job",
     ):
         indexes = Base.metadata.tables[table_name].indexes
         assert any(

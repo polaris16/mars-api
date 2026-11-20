@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import MemoryContributor, MemorySession, MemorySessionMember, User
 from app.schemas.memory_contributor import ContributorPage, ContributorResponse
 from app.services.memory_session_member_service import MemorySessionMemberService
+from app.services.memory_validation_queue import schedule_material_validation
 
 
 class MemoryContributorService:
@@ -236,4 +237,10 @@ class MemoryContributorService:
                     row.consented_at = now
                 row.updated_by = actor_id
                 row.updated_at = now
+                # [新增] 同意状态变更可能使现有叙事证据失效。
+                if memory.visibility is not None and row.contributor_type == "registered_user":
+                    schedule_material_validation(
+                        db, memory.owner_user_id, memory.id, actor_id=actor_id,
+                        reason="contributor_consent_changed",
+                    )
             return self._response(db, memory, row, user, now)

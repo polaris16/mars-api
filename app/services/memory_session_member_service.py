@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import MemorySession, MemorySessionMember, User, UserRelationship
 from app.schemas.memory_session_member import MemberGrantRequest, MemberPage, MemberResponse
+from app.services.memory_validation_queue import schedule_material_validation
 from app.services.user_relationship_service import UserRelationshipService
 
 
@@ -306,6 +307,12 @@ class MemorySessionMemberService:
             member.updated_by = actor_id
             member.updated_at = now
             session.flush()
+            # [新增] 重新授权的贡献者可能让历史素材恢复为有效证据。
+            if memory.visibility is not None and member.role in {"contributor", "editor"}:
+                schedule_material_validation(
+                    session, memory.owner_user_id, memory.id, actor_id=actor_id,
+                    reason="contributor_membership_granted",
+                )
             return self._response(session, memory.owner_user_id, member, now, user_active=True)
 
     def revoke(
@@ -337,4 +344,10 @@ class MemorySessionMemberService:
                 member.revocation_reason = reason
                 member.updated_by = actor_id
                 member.updated_at = now
+                # [新增] 贡献者授权撤回后复核该会话已被引用的来源。
+                if memory.visibility is not None and member.role in {"contributor", "editor"}:
+                    schedule_material_validation(
+                        session, memory.owner_user_id, memory.id, actor_id=actor_id,
+                        reason="contributor_membership_revoked",
+                    )
             return self._response(session, memory.owner_user_id, member, now, user_active=False)

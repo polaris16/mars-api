@@ -38,6 +38,7 @@ from app.schemas.memory import (
 )
 from app.services.memory_contributor_service import MemoryContributorService
 from app.services.memory_session_member_service import MemorySessionMemberService
+from app.services.memory_validation_queue import schedule_material_validation
 from app.services.object_storage_service import ObjectStorageService
 from app.services.topic_service import TopicService
 from app.services.user_relationship_service import UserRelationshipService
@@ -524,6 +525,10 @@ class MemoryService:
             for key, value in values.items():
                 setattr(row, key, value)
             row.updated_by = user.id
+            if "visibility" in values:
+                schedule_material_validation(
+                    session, row.owner_user_id, row.id, actor_id=user.id, reason="visibility_changed",
+                )
         return row
 
     def delete_session(self, session: Session, user: User, session_id: int) -> None:
@@ -561,6 +566,11 @@ class MemoryService:
                     attachment.updated_at = now
                     affected_asset_ids.add(attachment.media_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
+            # [新增] 该会话的历史元素可能支撑其他会话的核对问题。
+            if row.visibility is not None:
+                schedule_material_validation(
+                    session, row.owner_user_id, row.id, actor_id=user.id, reason="session_deleted",
+                )
 
     def create_upload_authorization(
         self,
@@ -1082,6 +1092,12 @@ class MemoryService:
             memory.last_material_at = self._latest_recorded_at(session, memory.id)
             memory.updated_by = user.id
             memory.updated_at = now
+            # [新增] 删除来源时同事务登记跨会话复验。
+            if memory.visibility is not None:
+                schedule_material_validation(
+                    session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
+                    actor_id=user.id, reason="fragment_deleted",
+                )
 
     def create_attachments(
         self,
@@ -1153,6 +1169,12 @@ class MemoryService:
                 asset.updated_by = user.id
                 result.append(link)
             session.flush()
+            # [新增] 附件更动触发复核当前片段已有的有效说法。
+            if memory.visibility is not None:
+                schedule_material_validation(
+                    session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
+                    actor_id=user.id, reason="attachments_added",
+                )
             return [self._attachment_response(session, link, storage) for link in result]
 
     def _attachment_response(
@@ -1212,6 +1234,11 @@ class MemoryService:
             for key, value in values.items():
                 setattr(link, key, value)
             link.updated_by = user.id
+            if memory.visibility is not None:
+                schedule_material_validation(
+                    session, memory.owner_user_id, memory.id, fragment_id=fragment_id,
+                    actor_id=user.id, reason="attachment_updated",
+                )
         return self._attachment_response(session, link, storage)
 
     def delete_attachment(
@@ -1234,6 +1261,11 @@ class MemoryService:
             link.updated_by = user.id
             link.updated_at = now
             self._refresh_assets_after_unlink(session, {link.media_asset_id})
+            if memory.visibility is not None:
+                schedule_material_validation(
+                    session, memory.owner_user_id, memory.id, fragment_id=fragment_id,
+                    actor_id=user.id, reason="attachment_deleted",
+                )
 
     def list_assets(
         self,

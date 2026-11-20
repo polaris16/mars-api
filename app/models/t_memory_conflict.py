@@ -46,6 +46,13 @@ class MemoryConflict(Base):
         ),
         Index("idx_t_memory_conflict_status_created", "status", "created_at"),
         Index("idx_t_memory_conflict_job", "detected_by_job_id"),
+        # [新增] 成对冲突沿组核对，并保留原有独立记录。
+        CheckConstraint(
+            "conflict_group_id IS NULL OR validation_job_id IS NOT NULL",
+            name="ck_memory_conflict_group_job",
+        ),
+        Index("idx_memory_conflict_group", "conflict_group_id", "id"),
+        Index("idx_memory_conflict_validation_job", "validation_job_id"),
         {"comment": "记忆元素间的冲突及用户确认结果"},
     )
 
@@ -71,6 +78,22 @@ class MemoryConflict(Base):
         ForeignKey("t_ai_processing_job.id", ondelete="SET NULL", name="fk_t_memory_conflict_job"),
         nullable=True,
         comment="发现冲突的 AI 任务 ID",
+    )
+    # [新增] 第四阶段的新成对记录关联冲突组和发布结果的任务。
+    conflict_group_id = Column(
+        BigInteger,
+        ForeignKey(
+            "t_memory_conflict_group.id", ondelete="RESTRICT", name="fk_memory_conflict_group"
+        ),
+        comment="所属冲突组 ID，历史记录可空",
+    )
+    validation_job_id = Column(
+        BigInteger,
+        ForeignKey(
+            "t_memory_validation_job.id", ondelete="RESTRICT",
+            name="fk_memory_conflict_validation_job",
+        ),
+        comment="发布本次成对冲突的复验任务 ID",
     )
     conflict_type = Column(String(40), nullable=False, comment="冲突涉及的属性或事实类型")
     description = Column(Text, nullable=False, comment="冲突的内容及差异说明")

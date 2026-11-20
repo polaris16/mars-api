@@ -24,6 +24,9 @@ from app.models import (
     LifeEntity,
     LifeEntityAlias,
     MediaAsset,
+    MemoryConflict,
+    MemoryConflictEvidence,
+    MemoryConflictGroup,
     MemoryContributor,
     MemoryDraftVersion,
     MemoryElement,
@@ -32,9 +35,12 @@ from app.models import (
     MemoryEntityEvidence,
     MemoryEntityResolution,
     MemoryFragment,
+    MemoryReviewAnswer,
+    MemoryReviewQuestion,
     MemorySession,
     MemorySessionMember,
     MemorySourceRevision,
+    MemoryValidationJob,
     Topic,
     TopicParticipant,
     User,
@@ -44,6 +50,7 @@ from app.schemas.memory_extraction import EntityMention, ExtractedElement, Struc
 from app.services.audio_transcription import AudioTranscriptionModel
 from app.services.memory_extraction_service import MemoryExtractionService
 from app.services.memory_pipeline import MemoryPipelineService
+from app.services.memory_validation_service import MemoryValidationService
 from app.services.narrative_organization import organize_narrative
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError, TextExtractionModel
@@ -83,7 +90,14 @@ def extraction_api(tmp_path, monkeypatch):
         MemorySourceRevision, MemoryDraftVersion, LifeEntity, LifeEntityAlias,
         MemoryElementEntity, MemoryEntityCandidate, MemoryEntityResolution, MemoryEntityEvidence,
     )
-    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob, *version_models):
+    # [新增] 核对与复验业务复用本地素材和提取链路。
+    validation_models = (
+        MemoryConflictGroup, MemoryConflictEvidence, MemoryReviewQuestion, MemoryReviewAnswer,
+        MemoryValidationJob, MemoryConflict,
+    )
+    # [删除-旧] for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob, *version_models):
+    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement,
+                  AIProcessingJob, *version_models, *validation_models):
         column = model.__table__.c.id
         monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
     for model, name in (
@@ -97,6 +111,16 @@ def extraction_api(tmp_path, monkeypatch):
         (MemoryEntityCandidate, "evidence"),
         (MemoryEntityCandidate, "candidate_entity_ids"),
         (MemoryEntityEvidence, "evidence"),
+        (MemoryConflictGroup, "resolution_payload"),
+        (MemoryConflictEvidence, "normalized_value"),
+        (MemoryConflictEvidence, "evidence_payload"),
+        (MemoryReviewQuestion, "options"),
+        (MemoryReviewQuestion, "evidence_ids"),
+        (MemoryReviewAnswer, "result_payload"),
+        (MemoryValidationJob, "input_payload"),
+        (MemoryValidationJob, "result_payload"),
+        (MemoryConflict, "conflict_payload"),
+        (MemoryConflict, "resolution_payload"),
     ):
         column = model.__table__.columns[name]
         monkeypatch.setattr(column, "type", column.type.with_variant(JSON(none_as_null=True), "sqlite"))
@@ -105,6 +129,11 @@ def extraction_api(tmp_path, monkeypatch):
     for index in MemoryElement.__table__.indexes:
         if index.name == "uq_t_memory_element_fragment_sequence_active":
             monkeypatch.setitem(index.dialect_options["sqlite"], "where", text("is_del = false"))
+    for model in validation_models:
+        for index in model.__table__.indexes:
+            predicate = index.dialect_options["postgresql"].get("where")
+            if predicate is not None:
+                monkeypatch.setitem(index.dialect_options["sqlite"], "where", predicate)
     with engine.begin() as db:
         db.execute(
             text("""CREATE TABLE t_user (
@@ -133,6 +162,7 @@ def extraction_api(tmp_path, monkeypatch):
             AIProcessingJob,
             MemoryElement,
             *version_models,
+            *validation_models,
         )
         MemorySession.metadata.create_all(db, tables=[model.__table__ for model in models])
         db.execute(text("INSERT INTO t_memory_session (id, owner_user_id) VALUES (11, 1), (12, 1)"))
@@ -520,6 +550,386 @@ def _finish_versioned_source(factory):
 def _enable_versioned_session(client):
     reply = client.patch(SESSION, headers=OWNER, json={"visibility": "private"})
     assert reply.status_code == 200, reply.text
+
+
+def _seed_review_case(client, factory, monkeypatch, *, context, narrator=1, years=(1983, 1985)):
+    def extract(_model, content, _timeout, **_kwargs):
+        year = int(content[:4])
+        return [StructuredElement(
+            # [删除-旧] element_type="event", source_quote=content, summary=context,
+            element_type="event", source_quote=content, summary=content,
+            time_start=f"{year}-01-01", time_end=f"{year}-12-31",
+        )]
+
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", extract)
+    for session_id in (11, 12):
+        response = client.patch(f"/api/recording-sessions/{session_id}", headers=OWNER, json={"visibility": "private"})
+        assert response.status_code == 200, response.text
+    fragments = []
+    for index, year in enumerate(years):
+        # [删除-旧] response = client.post(f"/api/recording-sessions/{11 + index % 2}/fragments", headers=OWNER, json={
+        #     "source_type": "text", "content_text": f"{year}年{context}", "narrator_user_id": narrator,
+        # })
+        # assert response.status_code == 201, response.text
+        # fragments.append(response.json()["id"])
+        # _finish_versioned_source(factory)
+        description = context[index] if isinstance(context, tuple) else context
+        fragments.append(_append_review_quote(client, factory, 11 + index % 2, f"{year}年{description}", narrator))
+    return fragments
+
+
+def _append_review_quote(client, factory, session_id, quote, narrator=1):
+    response = client.post(f"/api/recording-sessions/{session_id}/fragments", headers=OWNER, json={
+        "source_type": "text", "content_text": quote, "narrator_user_id": narrator,
+    })
+    assert response.status_code == 201, response.text
+    _finish_versioned_source(factory)
+    return response.json()["id"]
+
+
+def _run_review(factory):
+    with factory() as db:
+        assert MemoryValidationService().run(db)
+
+
+REVIEW_QUESTIONS = "/api/users/me/memory-review-questions"
+VALIDATION_JOBS = "/api/users/me/memory-validation-jobs"
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "exact_at", "expected"),
+    [
+        ("1983-01-01", "1983-12-31", None, "verified"),
+        ("1985-01-01", "1985-12-31", None, "pending"),
+        ("1983-05-01", "1983-05-01", None, "pending"),
+        ("1983-01-01", "1983-12-31", "1983-06-01T10:00:00+08:00", "pending"),
+    ],
+)
+def test_review_requires_evidence_for_extracted_time(
+    extraction_api, monkeypatch, start, end, exact_at, expected,
+):
+    """[新增] 原话只支持年份，排除错年和凭空增加的日期或时刻。"""
+    client, factory = extraction_api
+    quote = "1983年我搬进棉纺厂宿舍。"
+
+    def extract(*_args, **_kwargs):
+        return [StructuredElement(
+            element_type="event", summary=quote, source_quote=quote,
+            time_start=start, time_end=end, exact_at=exact_at,
+        )]
+
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", extract)
+    _open_versioned_text(client, factory, quote)
+    if expected == "pending":
+        # 复验也能撤回之前误发布的状态，原抽取字段仍用于追溯。
+        with factory() as db, db.begin():
+            db.scalar(select(MemoryElement)).verification_status = "verified"
+    _run_review(factory)
+    (element,) = client.get(ELEMENTS, headers=OWNER).json()["items"]
+    assert element["verification_status"] == expected
+    assert element["time_start"] == start
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    with factory() as db:
+        reason = db.get(MemoryElement, element["id"]).verification_reason
+        assert reason == ("time_source_mismatch" if expected == "pending" else None)
+
+
+def test_review_cross_session_answer_replay_and_ownership(extraction_api, monkeypatch):
+    """[新增] 通过五个入口核对跨会话问题、幂等和任务权限。"""
+    client, factory = extraction_api
+    _seed_review_case(client, factory, monkeypatch, context="我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。", years=(1983, 1985, 1987))
+    _run_review(factory)
+    for session_id in (11, 12):
+        result = client.get(REVIEW_QUESTIONS, headers=OWNER, params={"session_id": session_id, "page_size": 1})
+        assert result.status_code == 200, result.text
+        (question,) = result.json()["items"]
+        assert result.json()["total"] == 1
+        assert len(question["evidence"]) == 3
+        assert {item["session_id"] for item in question["evidence"]} == {11, 12}
+    assert client.get(REVIEW_QUESTIONS, headers=VIEWER).json()["total"] == 0
+    assert client.get(REVIEW_QUESTIONS).status_code == 401
+    endpoint = f"{REVIEW_QUESTIONS}/{question['id']}/answers"
+    body = {"expected_revision": question["revision"], "action": "confirm", "selected_option_id": question["options"][0]["id"]}
+    assert client.post(endpoint, headers=VIEWER, json=body).status_code == 404
+    assert client.post(endpoint, headers=OWNER, json={**body, "expected_revision": 99}).status_code == 409
+    saved = client.post(endpoint, headers=OWNER, json=body)
+    assert saved.status_code == 202, saved.text
+    assert client.post(endpoint, headers=OWNER, json=body).json() == saved.json()
+    assert client.post(endpoint, headers=OWNER, json={"expected_revision": question["revision"], "action": "skip"}).status_code == 409
+    job_url = f"{VALIDATION_JOBS}/{saved.json()['validation_job_id']}"
+    assert client.get(job_url, headers=VIEWER).status_code == 404
+    assert client.get(job_url, headers=OWNER).json()["status"] == "queued"
+    _run_review(factory)
+    job = client.get(job_url, headers=OWNER).json()
+    assert job["status"] == "succeeded"
+    assert job["result_payload"]["newly_verified_element_count"] == 1
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    with factory() as db:
+        group = db.scalar(select(MemoryConflictGroup))
+        assert group.status == "resolved"
+        assert group.resolution_answer_id == saved.json()["answer_id"]
+        assert len(db.scalars(select(MemoryConflict)).all()) == 3
+
+
+def test_review_cannot_remember_reopens_and_source_deletion_invalidates_question(extraction_api, monkeypatch):
+    """[新增] 记不清保留冲突，重复重开去重，删除来源即时隐藏旧问题。"""
+    client, factory = extraction_api
+    fragments = _seed_review_case(client, factory, monkeypatch, context="我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。")
+    _run_review(factory)
+    (question,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    path = f"{REVIEW_QUESTIONS}/{question['id']}"
+    revision = {"expected_revision": question["revision"]}
+    response = client.post(f"{path}/answers", headers=OWNER, json={**revision, "action": "cannot_remember"})
+    assert response.status_code == 202, response.text
+    _run_review(factory)
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    manual = client.post(VALIDATION_JOBS, headers=OWNER, json={"action": "rebuild"})
+    assert manual.status_code == 202, manual.text
+    _run_review(factory)
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    reopened = client.post(f"{path}/reopen", headers=OWNER, json=revision)
+    assert reopened.status_code == 202, reopened.text
+    assert client.post(f"{path}/reopen", headers=OWNER, json=revision).json() == reopened.json()
+    _run_review(factory)
+    (current,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert current["id"] != question["id"] and current["revision"] == question["revision"] + 1
+    assert client.delete(f"/api/recording-sessions/12/fragments/{fragments[1]}", headers=OWNER).status_code == 200
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    rejected = client.post(f"{REVIEW_QUESTIONS}/{current['id']}/answers", headers=OWNER, json={
+        "expected_revision": current["revision"], "action": "skip",
+    })
+    assert rejected.status_code == 409, rejected.text
+    _run_review(factory)
+    assert client.get(ELEMENTS, headers=OWNER).json()["items"][0]["verification_status"] == "verified"
+
+
+def test_review_distinguishes_events_and_preserves_correction_evidence(extraction_api, monkeypatch):
+    """[新增] 弱锚点先澄清，再核对新补述；旧抽取值依然可追溯。"""
+    client, factory = extraction_api
+    fragments = _seed_review_case(client, factory, monkeypatch, context="我搬家了。")
+    _run_review(factory)
+    (clarification,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert clarification["kind"] == "clarify_event"
+    answer_url = f"{REVIEW_QUESTIONS}/{clarification['id']}/answers"
+    assert client.post(answer_url, headers=OWNER, json={
+        "expected_revision": clarification["revision"], "action": "confirm", "selected_option_id": "same-event",
+    }).status_code == 202
+    _run_review(factory)
+    (question,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert question["kind"] == "confirm_value"
+    accepted = client.post(f"{REVIEW_QUESTIONS}/{question['id']}/answers", headers=OWNER, json={
+        "expected_revision": question["revision"], "action": "correct", "answer_text": "搬家发生在1984年。",
+    })
+    assert accepted.status_code == 202, accepted.text
+    _run_review(factory)
+    (follow_up,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert follow_up["kind"] == "follow_up"
+    assert any(item["answer_id"] == accepted.json()["answer_id"] for item in follow_up["evidence"])
+    option = next(item for item in follow_up["options"] if item["label"] == "1984 年")
+    assert client.post(f"{REVIEW_QUESTIONS}/{follow_up['id']}/answers", headers=OWNER, json={
+        "expected_revision": follow_up["revision"], "action": "confirm", "selected_option_id": option["id"],
+    }).status_code == 202
+    _run_review(factory)
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    with factory() as db:
+        group = db.scalar(select(MemoryConflictGroup).where(MemoryConflictGroup.field_key == "event_time"))
+        assert group.resolution_payload["adopted_value"]["time_start"] == "1984-01-01"
+        assert {row.time_start.year for row in db.scalars(select(MemoryElement))} == {1983, 1985}
+    # 删除用于事件归组的另一条说法，读取先挂起，复验保留仍有依据的补述结论。
+    assert client.delete(f"/api/recording-sessions/12/fragments/{fragments[1]}", headers=OWNER).status_code == 200
+    assert client.get(ELEMENTS, headers=OWNER, params={"verification_status": "verified"}).json()["total"] == 0
+    _run_review(factory)
+    assert client.get(ELEMENTS, headers=OWNER, params={"verification_status": "verified"}).json()["total"] == 1
+    with factory() as db:
+        group = db.scalar(select(MemoryConflictGroup).where(MemoryConflictGroup.field_key == "event_time"))
+        assert group.resolution_payload["adopted_value"]["time_start"] == "1984-01-01"
+
+
+def test_review_keeps_compatible_time_and_separates_location_roles():
+    from app.services.memory_validation_rules import compatible, place_values, time_value
+
+    absolute = time_value("1983年5月1日")
+    assert compatible(absolute, time_value("1983年到1984年"))
+    assert not compatible(absolute, time_value("1985年"))
+    assert time_value("不是1985年") is None
+    refs = [
+        {"id": 1, "entity_type": "place", "relation_type": "location", "display_name": "武汉"},
+        {"id": 2, "entity_type": "place", "relation_type": "location", "display_name": "郑州"},
+    ]
+    places = place_values("我们从武汉搬到郑州", refs)
+    assert [(role, value["entity_id"]) for role, value in places] == [
+        ("departure_location", 1), ("destination_location", 2),
+    ]
+
+
+def test_review_keeps_open_and_ambiguous_time_boundaries():
+    """[新增] 年、月、日的单边区间保持开放，只有确定不交叉才冲突。"""
+    from app.services.memory_validation_rules import compatible, time_value, value_label
+
+    after = time_value("1985 年以后我才搬进棉纺厂宿舍。")
+    before = time_value("1985年以前我住在村里。")
+    assert after == {"time_start": "1986-01-01", "time_end": None, "precision": "open_range"}
+    assert before == {"time_start": None, "time_end": "1984-12-31", "precision": "open_range"}
+    assert time_value("1984年2月以后")["time_start"] == "1984-03-01"
+    assert time_value("1984年2月29日以前")["time_end"] == "1984-02-28"
+    assert time_value("自1985年起")["time_start"] == "1985-01-01"
+    assert time_value("1985年前往了武汉")["time_start"] == "1985-01-01"
+    assert time_value("1985年前后") is None
+    assert time_value("我刚参加工作那会儿") is None
+    assert not compatible(after, time_value("1985年"))
+    assert not compatible(before, after)
+    assert compatible(after, time_value("1986年1月1日"))
+    assert compatible(after, time_value("1983年至1988年"))
+    assert compatible(before, time_value("1984年12月31日"))
+    assert value_label(after) == "1986-01-01 起"
+    assert value_label(before) == "截至 1984-12-31"
+
+
+def test_review_publishes_open_time_evidence_without_closing_its_end(extraction_api, monkeypatch):
+    """[新增] Worker 和问题接口都能使用单边区间。"""
+    from app.services.memory_validation_rules import time_value
+
+    client, factory = extraction_api
+    description = "我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。"
+
+    def extract(_model, content, _timeout, **_kwargs):
+        value = time_value(content)
+        return [StructuredElement(
+            element_type="event", source_quote=content, summary=description,
+            time_start=value["time_start"], time_end=value["time_end"],
+        )]
+
+    monkeypatch.setattr(TextExtractionModel, "extract_structured", extract)
+    _enable_versioned_session(client)
+    _append_review_quote(client, factory, 11, f"1985年以后{description}")
+    _append_review_quote(client, factory, 11, f"1983年{description}")
+    _run_review(factory)
+    (question,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert {option["label"] for option in question["options"]} == {"1983 年", "1986-01-01 起"}
+    with factory() as db:
+        evidence = list(db.scalars(select(MemoryConflictEvidence)))
+        assert any(item.normalized_value == {
+            "time_start": "1986-01-01", "time_end": None, "precision": "open_range",
+        } for item in evidence)
+
+
+@pytest.mark.parametrize("decision", ["same-event", "different-events"])
+def test_review_asks_about_similar_event_before_comparing_dates(extraction_api, monkeypatch, decision):
+    """[新增] 近似口述先澄清，确认同一事件和分别保留均可正常流转。"""
+    client, factory = extraction_api
+    _seed_review_case(client, factory, monkeypatch, context=(
+        "我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。",
+        "我和姐姐一起把父亲留下的缝纫机搬进棉纺厂宿舍。",
+    ))
+    _run_review(factory)
+    (question,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert question["kind"] == "clarify_event"
+    assert len(question["evidence"]) == 2
+    assert client.get(ELEMENTS, headers=OWNER).json()["items"][0]["verification_status"] == "pending"
+    answered = client.post(f"{REVIEW_QUESTIONS}/{question['id']}/answers", headers=OWNER, json={
+        "expected_revision": question["revision"], "action": "confirm", "selected_option_id": decision,
+    })
+    assert answered.status_code == 202, answered.text
+    _run_review(factory)
+    later = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    if decision == "same-event":
+        assert [item["kind"] for item in later] == ["confirm_value"]
+    else:
+        assert later == []
+        assert client.get(ELEMENTS, headers=OWNER).json()["items"][0]["verification_status"] == "verified"
+
+
+def test_review_preserves_explicitly_distinct_events(extraction_api, monkeypatch):
+    """[新增] 相近措辞中的次序词提供两次经历的区别。"""
+    client, factory = extraction_api
+    _seed_review_case(client, factory, monkeypatch, context=(
+        "我第一次和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。",
+        "我第二次和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。",
+    ))
+    _run_review(factory)
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    for session_id in (11, 12):
+        (element,) = client.get(f"/api/recording-sessions/{session_id}/memory-elements", headers=OWNER).json()["items"]
+        assert element["verification_status"] == "verified"
+
+
+@pytest.mark.parametrize("near", [False, True])
+def test_review_rejects_old_question_after_relevant_evidence_commits(extraction_api, monkeypatch, near):
+    """[新增] 第三条相关证据完成提取后旧题立即失效，与 Worker 的处理时点无关。"""
+    client, factory = extraction_api
+    context = "我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。"
+    _seed_review_case(client, factory, monkeypatch, context=context)
+    _run_review(factory)
+    (old,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    _append_review_quote(client, factory, 11, "1992年我在村里办了第一场乡亲们的书画展。")
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"] == [old]
+
+    description = context.replace("姐姐", "姐姐一起") if near else context
+    _append_review_quote(client, factory, 12, f"1987年{description}")
+    assert client.get(REVIEW_QUESTIONS, headers=OWNER).json()["total"] == 0
+    body = {"expected_revision": old["revision"], "action": "confirm",
+            "selected_option_id": old["options"][0]["id"]}
+    reply = client.post(f"{REVIEW_QUESTIONS}/{old['id']}/answers", headers=OWNER, json=body)
+    assert reply.status_code == 409, reply.text
+    with factory() as db:
+        assert db.scalar(select(MemoryReviewAnswer.id)) is None
+    _run_review(factory)
+    (updated,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    assert updated["id"] != old["id"] and len(updated["evidence"]) == 3
+    if near:
+        assert updated["kind"] == "clarify_event"
+    else:
+        assert updated["conflict_group_id"] == old["conflict_group_id"]
+        assert updated["revision"] == old["revision"] + 1
+
+
+def test_review_replays_answer_already_accepted_before_new_evidence(extraction_api, monkeypatch):
+    """[新增] 已登记回答的相同重发在证据更新后仍返回已有 ID。"""
+    client, factory = extraction_api
+    context = "我和姐姐把父亲留下的缝纫机搬进棉纺厂宿舍。"
+    _seed_review_case(client, factory, monkeypatch, context=context)
+    _run_review(factory)
+    (question,) = client.get(REVIEW_QUESTIONS, headers=OWNER).json()["items"]
+    path = f"{REVIEW_QUESTIONS}/{question['id']}/answers"
+    body = {"expected_revision": question["revision"], "action": "cannot_remember"}
+    accepted = client.post(path, headers=OWNER, json=body)
+    assert accepted.status_code == 202, accepted.text
+    _append_review_quote(client, factory, 11, f"1987年{context}")
+    retransmission = client.post(path, headers=OWNER, json=body)
+    assert retransmission.status_code == 202
+    assert retransmission.json() == accepted.json()
+    assert client.post(f"{REVIEW_QUESTIONS}/{question['id']}/reopen", headers=OWNER, json={
+        "expected_revision": question["revision"],
+    }).status_code == 409
+
+
+def test_review_retry_recovers_abandoned_leases(extraction_api, monkeypatch):
+    """[新增] 领取超时的旧租约无法发布，超过次数后支持人工重试。"""
+    from app.services import memory_validation_queue as queue
+
+    client, factory = extraction_api
+    _seed_review_case(client, factory, monkeypatch, context="我搬家了。", years=(1983,))
+    with factory() as db:
+        with db.begin():
+            job = db.scalar(select(MemoryValidationJob))
+            job.max_attempts = 1
+        assignment = queue.claim(db)
+        assert assignment is not None
+        assert queue.claim(db) is None
+        with db.begin():
+            job = db.get(MemoryValidationJob, assignment[0])
+            job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            job_id = job.id
+        assert queue.claim(db) is None
+        with db.begin():
+            assert queue.owned_claim(db, *assignment) is None
+    assert client.get(f"{VALIDATION_JOBS}/{job_id}", headers=OWNER).json()["status"] == "failed"
+    body = {"action": "retry", "retry_of_job_id": job_id}
+    retried = client.post(VALIDATION_JOBS, headers=OWNER, json=body)
+    assert retried.status_code == 202, retried.text
+    assert client.post(VALIDATION_JOBS, headers=OWNER, json=body).json() == retried.json()
+    _run_review(factory)
+    assert client.get(f"{VALIDATION_JOBS}/{retried.json()['validation_job_id']}", headers=OWNER).json()["status"] == "succeeded"
 
 
 def test_app_transcript_persists_text_source_and_actual_narrator(extraction_api):

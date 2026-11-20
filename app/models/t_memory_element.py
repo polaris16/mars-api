@@ -64,6 +64,8 @@ class MemoryElement(Base):
         Index("idx_t_memory_element_job", "processing_job_id"),
         Index("idx_memory_element_draft", "draft_version_id"),
         Index("idx_memory_element_verification", "session_id", "verification_status"),
+        # [新增] 追溯当前系统验证状态由哪个任务发布。
+        Index("idx_memory_element_validation_job", "last_validation_job_id"),
         CheckConstraint(
             "verification_status IN ('pending', 'verified', 'conflict')",
             name="ck_memory_element_verification",
@@ -103,6 +105,16 @@ class MemoryElement(Base):
     draft_references = Column(JSONB(none_as_null=True), comment="整理稿段落及段内引用位置")
     verification_status = Column(
         String(20), comment="系统验证状态，待核对、已验证或冲突，独立于人工核对"
+    )
+    # [新增] 验证原因与最后一次发布任务，旧元素可以保留空值。
+    verification_reason = Column(String(40), comment="未通过系统核验的原因码，通过时为空")
+    last_validation_job_id = Column(
+        BigInteger,
+        ForeignKey(
+            "t_memory_validation_job.id", ondelete="RESTRICT",
+            name="fk_memory_element_validation_job", use_alter=True,
+        ),
+        comment="最近发布验证状态的复验任务 ID",
     )
     element_type = Column(
         String(30),

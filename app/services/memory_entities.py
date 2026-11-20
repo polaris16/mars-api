@@ -12,6 +12,7 @@ from app.models import (
 from app.schemas.memory_extraction import StructuredElement
 from app.schemas.memory_processing import CandidateResolutionCreate
 from app.services.memory_service import MemoryService
+from app.services.memory_validation_queue import schedule_material_validation
 from app.services.memory_versions import fingerprint
 
 
@@ -497,6 +498,11 @@ class MemoryEntityService:
                 )
                 db.add(resolution)
                 db.flush()
+                # [新增] 实体身份变化会改变已有事件的核验依据。
+                schedule_material_validation(
+                    db, user.id, memory.id, fragment_id=element.source_fragment_id,
+                    actor_id=user.id, reason="entity_resolution_changed",
+                )
             return {
                 "id": resolution.id, "action": resolution.action, "entity_id": resolution.entity_id,
                 "candidate_id": candidate.id, "revision": candidate.revision,

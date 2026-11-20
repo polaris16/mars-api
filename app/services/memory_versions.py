@@ -7,9 +7,10 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import MemoryDraftVersion, MemoryElement, MemorySourceRevision
+from app.models import MemoryDraftVersion, MemoryElement, MemoryFragment, MemorySession, MemorySourceRevision
 from app.schemas.memory_processing import NarrationInput, TextRange, TranscriptSegment
 from app.services.draft_provenance import DraftParagraph
+from app.services.memory_validation_queue import lock_owner, schedule_material_validation
 from app.services.narrative_organization import audio_ranges_for_text
 
 
@@ -74,11 +75,23 @@ def active_draft(db: Session, source_id: int) -> MemoryDraftVersion | None:
 
 def retire_elements(db: Session, fragment_id: int, owner_id: int) -> None:
     """当前结果失效，旧元素和确认记录继续用于审计与重跑比对。"""
+    # [新增] 与核验 Worker 共用所有者锁，先锁所有者再更新元素。
+    memory = db.execute(select(MemorySession.id, MemorySession.owner_user_id).join(
+        MemoryFragment, MemoryFragment.session_id == MemorySession.id,
+    ).where(MemoryFragment.id == fragment_id)).one_or_none()
+    if memory is not None:
+        lock_owner(db, memory.owner_user_id)
     db.execute(
         update(MemoryElement)
         .where(MemoryElement.source_fragment_id == fragment_id, MemoryElement.is_del.is_(False))
         .values(is_del=True, updated_by=owner_id)
     )
+    # [新增] 失效引用与复验任务一同提交。
+    if memory is not None:
+        schedule_material_validation(
+            db, memory.owner_user_id, memory.id, fragment_id=fragment_id,
+            actor_id=owner_id, reason="source_revision_changed",
+        )
 
 
 def save_source(

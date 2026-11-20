@@ -109,3 +109,50 @@ def test_versioned_memory_migration_creates_current_tables_and_constraints():
     assert "DROP CONSTRAINT fk_memory_element_draft" in sql
     for name in tables:
         assert f"DROP TABLE {name}" in sql
+
+
+def test_memory_conflict_review_migration_orders_foreign_keys_and_keeps_history():
+    """[新增] 检查冲突表迁移及循环外键的升级、回退顺序。"""
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261120_01:20261120_02", sql=True)
+    upgrade_sql = output.getvalue()
+    new_tables = (
+        "t_memory_conflict_group", "t_memory_conflict_evidence", "t_memory_review_question",
+        "t_memory_review_answer", "t_memory_validation_job",
+    )
+    for table in new_tables:
+        assert f"CREATE TABLE {table} (" in upgrade_sql
+        assert f"COMMENT ON TABLE {table} IS" in upgrade_sql
+    assert upgrade_sql.index("CREATE TABLE t_memory_review_answer (") < upgrade_sql.index(
+        "ADD CONSTRAINT fk_memory_group_resolution_answer"
+    )
+    assert upgrade_sql.index("CREATE TABLE t_memory_validation_job (") < upgrade_sql.index(
+        "ADD CONSTRAINT fk_memory_element_validation_job"
+    )
+    assert "ADD CONSTRAINT ck_memory_conflict_group_job" in upgrade_sql
+    assert "UNIQUE (question_id)" in upgrade_sql
+    assert "CONSTRAINT ck_memory_review_answer_action_payload CHECK" in upgrade_sql
+    assert "CONSTRAINT ck_memory_conflict_evidence_source CHECK" in upgrade_sql
+    assert "CONSTRAINT ck_memory_validation_job_lease CHECK" in upgrade_sql
+    assert "CREATE UNIQUE INDEX uq_memory_review_question_pending" in upgrade_sql
+    assert "CREATE UNIQUE INDEX uq_memory_validation_job_processing" in upgrade_sql
+    assert "UPDATE t_memory_" not in upgrade_sql
+    assert "DELETE FROM t_memory_" not in upgrade_sql
+    assert "DROP " not in upgrade_sql
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261120_02:20261120_01", sql=True)
+    downgrade_sql = output.getvalue()
+    assert downgrade_sql.index("DROP CONSTRAINT fk_memory_group_resolution_answer") < (
+        downgrade_sql.index("DROP TABLE t_memory_review_answer;")
+    )
+    assert downgrade_sql.index("DROP CONSTRAINT fk_memory_element_validation_job") < (
+        downgrade_sql.index("DROP TABLE t_memory_validation_job;")
+    )
+    assert downgrade_sql.index("DROP TABLE t_memory_conflict_evidence;") < (
+        downgrade_sql.index("DROP TABLE t_memory_review_answer;")
+    )
+    assert "DROP TABLE t_memory_element;" not in downgrade_sql
+    assert "DROP TABLE t_memory_conflict;" not in downgrade_sql

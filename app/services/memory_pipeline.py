@@ -28,6 +28,7 @@ from app.services.memory_versions import (
     active_draft, current_source, decode_paragraphs, encode_paragraphs, fingerprint,
     paragraph_reference, retire_elements, save_source, source_audio_segments, source_narration,
 )
+from app.services.memory_validation_rules import invalidated_verification_ids
 from app.services.narrative_organization import organize_narrative, validate_transcript_segments
 from app.services.object_storage_service import ObjectStorageService
 from app.services.text_extraction_model import ExtractionError
@@ -572,7 +573,9 @@ class MemoryPipelineService:
         }
 
     def progress(self, db, user, session_id, fragment_id) -> dict:
-        fragment, _ = self._fragment(db, user, session_id, fragment_id)
+        # [删除-旧] fragment, _ = self._fragment(db, user, session_id, fragment_id)
+        # [新增] 处理进度同样收窄跨会话核验状态。
+        fragment, memory = self._fragment(db, user, session_id, fragment_id)
         source = current_source(db, fragment_id)
         draft = active_draft(db, source.id) if source else None
         asr_job = db.scalar(self._jobs(fragment_id, "asr").order_by(AIProcessingJob.id.desc()).limit(1))
@@ -601,7 +604,13 @@ class MemoryPipelineService:
             rows = db.scalars(self.extraction._elements(session_id).where(
                 MemoryElement.processing_job_id == ext_job.id,
             ).order_by(MemoryElement.sequence_no))
-            extraction["elements"] = [self.extraction.element_response(db, row) for row in rows]
+            # [删除-旧] extraction["elements"] = [self.extraction.element_response(db, row) for row in rows]
+            shared = memory.owner_user_id != user.id
+            invalidated = set() if shared else invalidated_verification_ids(db, user.id)
+            extraction["elements"] = [
+                self.extraction.element_response(db, row, shared=shared, invalidated=row.id in invalidated)
+                for row in rows
+            ]
         if ext_job and ext_job.status in {"succeeded", "failed"}:
             extraction["fallback_element_id"] = (ext_job.result_payload or {}).get("fallback_element_id")
         return {

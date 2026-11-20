@@ -8,12 +8,13 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import User, UserRelationship
+from app.models import MemoryContributor, MemorySession, User, UserRelationship
 from app.schemas.user_relationship import (
     RelationshipCreateRequest,
     RelationshipListResponse,
     RelationshipRecordResponse,
 )
+from app.services.memory_validation_queue import schedule_material_validation
 
 RECIPROCAL_CODES = {
     "parent_of": "child_of",
@@ -360,4 +361,17 @@ class UserRelationshipService:
                 member.revoked_at = now
                 member.updated_at = now
                 member.updated_by = user_id
+            # [新增] 一次关系撤回可影响两位所有者的素材，按固定顺序登记复验。
+            if current_status == "active" and row.relationship_type == "family":
+                affected = session.execute(select(MemorySession.owner_user_id, MemorySession.id).join(
+                    MemoryContributor, MemoryContributor.session_id == MemorySession.id,
+                ).where(
+                    MemorySession.visibility.is_not(None), MemorySession.is_del.is_(False),
+                    MemoryContributor.relationship_id.in_([member.id for member in pair]),
+                    MemoryContributor.is_del.is_(False),
+                ).distinct().order_by(MemorySession.owner_user_id, MemorySession.id))
+                for owner_id, session_id in affected:
+                    schedule_material_validation(
+                        session, owner_id, session_id, actor_id=user_id, reason="source_relationship_revoked",
+                    )
             return pair
