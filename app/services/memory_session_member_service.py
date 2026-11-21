@@ -34,6 +34,8 @@ class MemorySessionMemberService:
         role: str,
         relationship_id: int | None,
         now: datetime,
+        *,
+        allow_contacts: bool = False,
     ) -> list[UserRelationship] | None:
         """Return the relationship rows supporting membership, or None if invalid."""
         if relationship_id is None:
@@ -55,7 +57,14 @@ class MemorySessionMemberService:
                 return None
             rows = [row]
         else:
-            if row.relationship_type != "family":
+            # [删除-旧] if row.relationship_type != "family":
+            # [新增] 仅版本化会话开放联系人授权，沿用原始记忆由所有者编辑的边界。
+            allowed = row.relationship_type == "family" or (
+                allow_contacts
+                and row.relationship_type == "contact"
+                and role in {"viewer", "contributor"}
+            )
+            if not allowed:
                 return None
             rows = list(
                 session.scalars(
@@ -65,7 +74,8 @@ class MemorySessionMemberService:
                     )
                 )
             )
-            if not UserRelationshipService.is_confirmed_family_pair(rows, now):
+            # [删除-旧] if not UserRelationshipService.is_confirmed_family_pair(rows, now):
+            if not UserRelationshipService.is_confirmed_pair(rows, now):
                 return None
         if any(
             item.status != "active"
@@ -160,6 +170,7 @@ class MemorySessionMemberService:
                 member.role,
                 member.source_relationship_id,
                 now,
+                allow_contacts=memory.visibility in {"private", "public"},
             )
             is not None
         )
@@ -272,6 +283,7 @@ class MemorySessionMemberService:
                     body.role,
                     body.source_relationship_id,
                     now,
+                    allow_contacts=memory.visibility in {"private", "public"},
                 )
                 is None
             ):
@@ -310,7 +322,10 @@ class MemorySessionMemberService:
             # [新增] 重新授权的贡献者可能让历史素材恢复为有效证据。
             if memory.visibility is not None and member.role in {"contributor", "editor"}:
                 schedule_material_validation(
-                    session, memory.owner_user_id, memory.id, actor_id=actor_id,
+                    session,
+                    memory.owner_user_id,
+                    memory.id,
+                    actor_id=actor_id,
                     reason="contributor_membership_granted",
                 )
             return self._response(session, memory.owner_user_id, member, now, user_active=True)
@@ -347,7 +362,10 @@ class MemorySessionMemberService:
                 # [新增] 贡献者授权撤回后复核该会话已被引用的来源。
                 if memory.visibility is not None and member.role in {"contributor", "editor"}:
                     schedule_material_validation(
-                        session, memory.owner_user_id, memory.id, actor_id=actor_id,
+                        session,
+                        memory.owner_user_id,
+                        memory.id,
+                        actor_id=actor_id,
                         reason="contributor_membership_revoked",
                     )
             return self._response(session, memory.owner_user_id, member, now, user_active=False)

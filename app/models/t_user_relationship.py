@@ -1,4 +1,6 @@
-"""Registered-user family, care, and delegation relationships."""
+"""[新增] 持久化联系人、亲属、代理等注册用户关系。"""
+
+# [删除-旧] """Registered-user family, care, and delegation relationships."""
 
 from sqlalchemy import (
     BigInteger,
@@ -26,11 +28,16 @@ class UserRelationship(Base):
             "subject_user_id <> related_user_id", name="ck_t_user_relationship_distinct_users"
         ),
         CheckConstraint(
-            "relationship_type IN ('family', 'agent', 'caregiver', 'other')",
+            # [删除-旧] "relationship_type IN ('family', 'agent', 'caregiver', 'other')",
+            "relationship_type IN ('family', 'agent', 'caregiver', 'other', 'contact')",
             name="ck_t_user_relationship_type",
         ),
         CheckConstraint(
-            "relation_code IN ('parent_of', 'child_of', 'spouse_of', 'sibling_of', 'related_to', 'agent_for', 'caregiver_for', 'other')",
+            # [删除-旧] "relation_code IN ('parent_of', 'child_of', 'spouse_of', 'sibling_of', 'related_to', 'agent_for', 'caregiver_for', 'other')",
+            "(relationship_type = 'contact' AND relation_code = 'contact_of') OR "
+            "(relationship_type <> 'contact' AND relation_code IN "
+            "('parent_of', 'child_of', 'spouse_of', 'sibling_of', 'related_to', "
+            "'agent_for', 'caregiver_for', 'other'))",
             name="ck_t_user_relationship_relation_code",
         ),
         CheckConstraint(
@@ -46,7 +53,8 @@ class UserRelationship(Base):
         ),
         Index("idx_t_user_relationship_subject_status", "subject_user_id", "status"),
         Index("idx_t_user_relationship_related_status", "related_user_id", "status"),
-        {"comment": "注册用户间的亲友或代理关系"},
+        # [删除-旧] {"comment": "注册用户间的亲友或代理关系"},
+        {"comment": "注册用户间的联系人、亲属、代理或其他关系"},
     )
 
     id = Column(
@@ -56,7 +64,8 @@ class UserRelationship(Base):
         UUID(as_uuid=True),
         nullable=False,
         server_default=text("gen_random_uuid()"),
-        comment="关系组 ID，双向亲属记录共用",
+        # [删除-旧] comment="关系组 ID，双向亲属记录共用",
+        comment="关系组 ID，双向联系人或亲属记录共用",
     )
     subject_user_id = Column(
         BigInteger,
@@ -73,14 +82,20 @@ class UserRelationship(Base):
     relationship_type = Column(
         String(30),
         nullable=False,
-        comment="关系类型：family 亲属、agent 代理、caregiver 照护、other 其他",
+        # [删除-旧] comment="关系类型：family 亲属、agent 代理、caregiver 照护、other 其他",
+        comment="关系类型：contact 联系人、family 亲属、agent 代理、caregiver 照护、other 其他",
     )  # [UPDATED] Added column comment.
     relation_code = Column(
-        String(30), nullable=False, comment="主体对目标的关系码，如 parent_of 的反向为 child_of"
+        # [删除-旧] String(30), nullable=False, comment="主体对目标的关系码，如 parent_of 的反向为 child_of"
+        String(30),
+        nullable=False,
+        comment="主体对目标的关系码，联系人双向均为 contact_of",
     )
     relationship_label = Column(
         String(100), comment="用户填写的自定义关系称谓"
     )  # [UPDATED] Added column comment.
+    # [新增] 留言保存在发起方向，历史申请和反向记录允许为空。
+    request_message = Column(String(200), nullable=True, comment="发起人填写的好友申请留言")
     status = Column(
         String(20),
         nullable=False,

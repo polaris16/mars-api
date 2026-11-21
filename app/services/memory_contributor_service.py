@@ -101,7 +101,8 @@ class MemoryContributorService:
     @staticmethod
     def _display_name(account: User, contributor_type: str) -> str:
         # Older records may have used the login username or phone as a display name.
-        return account.display_name or ("会话主人" if contributor_type == "owner" else "亲属")
+        # [删除-旧] return account.display_name or ("会话主人" if contributor_type == "owner" else "亲属")
+        return account.display_name or ("会话主人" if contributor_type == "owner" else "素材提供者")
 
     def _response(
         self,
@@ -166,7 +167,9 @@ class MemoryContributorService:
             member = None if owner else self._eligible_member(db, memory, target_id, now)
             if not owner and member is None:
                 raise HTTPException(
-                    status_code=422, detail="提供者需要有效的亲属关系和会话贡献授权"
+                    # [删除-旧] status_code=422, detail="提供者需要有效的亲属关系和会话贡献授权"
+                    status_code=422,
+                    detail="提供者需要有效的用户关系和会话贡献授权",
                 )
 
             contributor_type = "owner" if owner else "registered_user"
@@ -240,7 +243,10 @@ class MemoryContributorService:
                 # [新增] 同意状态变更可能使现有叙事证据失效。
                 if memory.visibility is not None and row.contributor_type == "registered_user":
                     schedule_material_validation(
-                        db, memory.owner_user_id, memory.id, actor_id=actor_id,
+                        db,
+                        memory.owner_user_id,
+                        memory.id,
+                        actor_id=actor_id,
                         reason="contributor_consent_changed",
                     )
             return self._response(db, memory, row, user, now)

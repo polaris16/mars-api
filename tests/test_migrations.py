@@ -60,12 +60,23 @@ def test_reliability_and_schema_comments_generate_offline_postgresql_sql():
     output = StringIO()
     config = Config(str(project_root / "alembic.ini"), output_buffer=output)
     comments = ScriptDirectory.from_config(config).get_revision("20261119_12").module
-    updated_by_pipeline = {("t_life_entity", "entity_type"), ("t_memory_element_entity", "relation_type")}
+    # [删除-旧] updated_by_pipeline = {("t_life_entity", "entity_type"), ("t_memory_element_entity", "relation_type")}
+    # [新增] 后续修订的中文注释由对应迁移测试与当前 ORM 对齐。
+    updated_later = {
+        ("t_life_entity", "entity_type"),
+        ("t_memory_element_entity", "relation_type"),
+        ("t_user_relationship", "relationship_pair_id"),
+        ("t_user_relationship", "relationship_type"),
+        ("t_user_relationship", "relation_code"),
+    }
     for table_name, (_, current) in comments.TABLE_COMMENTS.items():
-        assert Base.metadata.tables[table_name].comment == current
+        # [删除-旧] assert Base.metadata.tables[table_name].comment == current
+        if table_name != "t_user_relationship":
+            assert Base.metadata.tables[table_name].comment == current
     for table_name, columns in comments.COLUMN_COMMENTS.items():
         for field, _, current in columns:
-            if (table_name, field) not in updated_by_pipeline:
+            # [删除-旧] if (table_name, field) not in updated_by_pipeline:
+            if (table_name, field) not in updated_later:
                 assert Base.metadata.tables[table_name].c[field].comment == current
 
     command.upgrade(config, "20261119_10:20261119_12", sql=True)
@@ -195,3 +206,50 @@ def test_graph_event_migration_creates_only_nodes_and_versioned_members():
         f"DROP TABLE {member};",
         f"DROP TABLE {event};",
     ]
+
+
+def test_contact_migration_extends_relationship_constraints_without_rewriting_rows():
+    """[新增] 联系人使用独立的类型与关系码，并保留历史数据。"""
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261121_01:20261121_02", sql=True)
+    sql = output.getvalue()
+    table = Base.metadata.tables["t_user_relationship"]
+    for constraint in table.constraints:
+        if constraint.name in {
+            "ck_t_user_relationship_type", "ck_t_user_relationship_relation_code",
+        }:
+            assert f"ADD CONSTRAINT {constraint.name} CHECK ({constraint.sqltext})" in sql
+    for name in ("relationship_pair_id", "relationship_type", "relation_code"):
+        assert f"COMMENT ON COLUMN {table.name}.{name} IS '{table.c[name].comment}'" in sql
+    assert f"COMMENT ON TABLE {table.name} IS '{table.comment}'" in sql
+    assert "UPDATE t_user_relationship" not in sql
+    assert "DELETE FROM t_user_relationship" not in sql
+    assert "CREATE TABLE " not in sql
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261121_02:20261121_01", sql=True)
+    sql = output.getvalue()
+    assert sql.index("RAISE EXCEPTION") < sql.index("DROP CONSTRAINT")
+    assert "DELETE FROM" not in sql
+
+
+def test_friend_request_message_migration_adds_only_nullable_message():
+    """[新增] 原有申请不需要回填，也可继续被 ORM 读取。"""
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261121_02:20261121_03", sql=True)
+    table = Base.metadata.tables["t_user_relationship"]
+    column = table.c.request_message
+    assert column.nullable and column.type.length == 200 and column.server_default is None
+    assert [line for line in output.getvalue().splitlines() if line.startswith("ALTER TABLE ")] == [
+        "ALTER TABLE t_user_relationship ADD COLUMN request_message VARCHAR(200);"
+    ]
+    assert f"COMMENT ON COLUMN {table.name}.{column.name} IS '{column.comment}'" in output.getvalue()
+    assert "UPDATE t_user_relationship" not in output.getvalue()
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261121_03:20261121_02", sql=True)
+    assert "ALTER TABLE t_user_relationship DROP COLUMN request_message;" in output.getvalue()

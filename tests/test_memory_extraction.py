@@ -100,8 +100,12 @@ def extraction_api(tmp_path, monkeypatch):
     graph_models = (MemoryGraphEvent, MemoryGraphEventElement)
     # [删除-旧] for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, AIProcessingJob, *version_models):
     # [新增] 图谱共享测试通过用户关系接口发起真实授权流程。
-    for model in (MemorySession, MemoryFragment, MemoryContributor, MemoryElement, UserRelationship,
-                  AIProcessingJob, *version_models, *validation_models, *graph_models):
+    # [新增] 联系人贡献回归通过实际上传入口新增媒体对象和附件关联。
+    for model in (
+        MemorySession, MemoryFragment, MemoryContributor, MemoryElement, UserRelationship,
+        MediaAsset, FragmentAttachment, AIProcessingJob, *version_models,
+        *validation_models, *graph_models,
+    ):
         column = model.__table__.c.id
         monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
     for model, name in (
@@ -134,7 +138,7 @@ def extraction_api(tmp_path, monkeypatch):
         if index.name == "uq_t_memory_element_fragment_sequence_active":
             monkeypatch.setitem(index.dialect_options["sqlite"], "where", text("is_del = false"))
     # [删除-旧] for model in validation_models:
-    for model in (UserRelationship, *validation_models, *graph_models):
+    for model in (UserRelationship, MediaAsset, FragmentAttachment, *validation_models, *graph_models):
         for index in model.__table__.indexes:
             predicate = index.dialect_options["postgresql"].get("where")
             if predicate is not None:

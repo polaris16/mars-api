@@ -154,6 +154,7 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
                 subject_user_id BIGINT NOT NULL, related_user_id BIGINT NOT NULL,
                 relationship_type VARCHAR(30) NOT NULL, relation_code VARCHAR(30) NOT NULL,
                 relationship_label VARCHAR(100), status VARCHAR(20) NOT NULL,
+                request_message VARCHAR(200),
                 authorization_method VARCHAR(30) NOT NULL, authorization_reference VARCHAR(255),
                 initiated_by_user_id BIGINT NOT NULL, verified_by_user_id BIGINT,
                 valid_from TIMESTAMP, valid_until TIMESTAMP, invitation_expires_at TIMESTAMP, accepted_at TIMESTAMP,

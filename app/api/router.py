@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from app.api.endpoints.auth import router as auth_router
+from app.api.endpoints.contacts import router as contacts_router  # [新增] App 联系人入口
 from app.api.endpoints.health import router as health_router
 from app.api.endpoints.interests import router as interests_router
 from app.api.endpoints.topics import router as topics_router
@@ -24,6 +25,7 @@ api_router.include_router(interests_router)
 api_router.include_router(topics_router)    # 首页推荐话题路由。
 api_router.include_router(users_router)
 api_router.include_router(user_relationships_router)
+api_router.include_router(contacts_router)
 api_router.include_router(memories_router)  # 注册录音与素材管理路由。
 api_router.include_router(memory_extraction_router)
 api_router.include_router(memory_processing_router)
