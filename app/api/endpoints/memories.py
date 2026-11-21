@@ -4,14 +4,31 @@ from collections.abc import Callable
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser
 from app.db.database import get_db
 from app.models import MemoryFragment, MemorySession, User
+from app.schemas.attachment_upload import (
+    AttachmentCompleteBatch,
+    AttachmentCompleteBatchResponse,
+    AttachmentUploadBatch,
+    AttachmentUploadBatchResponse,
+)
 from app.schemas.memory import (
+    PG_BIGINT_MAX,
     AttachmentBatchCreate,
     AttachmentPatch,
     AttachmentResponse,
@@ -34,6 +51,7 @@ from app.schemas.memory import (
     UploadCompleteRequest,
 )
 from app.schemas.memory_extraction import ExtractionRequest
+from app.services.attachment_upload_service import AttachmentUploadService
 from app.services.memory_extraction_service import (
     MemoryExtractionService,
     get_memory_extraction_service,
@@ -397,6 +415,39 @@ def delete_fragment(
 ):
     service.delete_fragment(db, user, session_id, fragment_id)
     return {"id": fragment_id, "deleted": True}
+
+
+# [新增] 批量上传专用于一个已有片段的附件。
+@router.post(
+    "/memory-fragments/{fragment_id}/attachments/batch-upload-authorizations",
+    response_model=AttachmentUploadBatchResponse,
+    summary="批量申请片段附件上传授权",
+)
+def create_fragment_attachment_batch_upload_authorizations(
+    fragment_id: Annotated[int, Path(gt=0, le=PG_BIGINT_MAX)],
+    body: AttachmentUploadBatch,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AttachmentUploadService, Depends(AttachmentUploadService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.authorize(db, user, fragment_id, body, storage)
+
+
+@router.post(
+    "/memory-fragments/{fragment_id}/attachments/batch-complete-and-attach",
+    response_model=AttachmentCompleteBatchResponse,
+    summary="批量确认上传并关联片段附件",
+)
+def complete_and_attach_fragment_attachment_batch(
+    fragment_id: Annotated[int, Path(gt=0, le=PG_BIGINT_MAX)],
+    body: AttachmentCompleteBatch,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AttachmentUploadService, Depends(AttachmentUploadService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.complete_and_attach(db, user, fragment_id, body, storage)
 
 
 @router.post(

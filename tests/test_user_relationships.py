@@ -183,6 +183,12 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
         ):
             column = model.__table__.c.id
             monkeypatch.setattr(column, "type", column.type.with_variant(Integer(), "sqlite"))
+        # [新增] 隔离测试中沿用实际数据库的活跃素材及关联唯一范围。
+        for model in (MediaAsset, FragmentAttachment):
+            for index in model.__table__.indexes:
+                predicate = index.dialect_options["postgresql"].get("where")
+                if predicate is not None:
+                    monkeypatch.setitem(index.dialect_options["sqlite"], "where", predicate)
         MemorySession.metadata.create_all(
             connection,
             tables=[

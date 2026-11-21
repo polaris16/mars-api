@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.schemas.memory import (
     AttachmentBatchCreate,
+    AttachmentInput,
     AttachmentPatch,
     FragmentCreate,
     FragmentPatch,
@@ -44,6 +45,18 @@ from app.services.topic_service import TopicService
 from app.services.user_relationship_service import UserRelationshipService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
+CONFIRMED_UPLOAD_STATES = {"uploaded", "attached"}
+
+
+class UploadItemError(HTTPException):
+    """[新增] 保留单文件错误详情，并为批量响应提供稳定业务码。"""
+
+    def __init__(
+        self, status_code: int, detail: str, *, code: str, retryable: bool = False
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.code = code
+        self.retryable = retryable
 
 
 class MemoryService:
@@ -572,12 +585,92 @@ class MemoryService:
                     session, row.owner_user_id, row.id, actor_id=user.id, reason="session_deleted",
                 )
 
+    # [新增] 在既有作用域格式内区分批量尝试与服务端生成的单文件上传键。
+    @staticmethod
+    def batch_attachment_upload_key(
+        user_id: int, session_id: int, fragment_id: int, client_file_id: uuid.UUID
+    ) -> str:
+        return f"users/{user_id}/attachment/scope/{session_id}/{fragment_id}/batch-{client_file_id.hex}"
+
+    @staticmethod
+    def _find_confirmed_upload(
+        session: Session, user_id: int, purpose: str, media_type: str, digest: str, size: int
+    ) -> MediaAsset | None:
+        return session.scalar(
+            select(MediaAsset).where(
+                MediaAsset.uploaded_by_user_id == user_id,
+                MediaAsset.purpose == purpose,
+                MediaAsset.media_type == media_type,
+                MediaAsset.content_sha256 == digest,
+                MediaAsset.size_bytes == size,
+                MediaAsset.upload_status.in_(CONFIRMED_UPLOAD_STATES),
+                MediaAsset.is_del.is_(False),
+            )
+        )
+
+    @staticmethod
+    def _signed_upload(
+        asset: MediaAsset, storage: ObjectStorageService, ttl_seconds: int | None = None
+    ) -> dict:
+        expires_at = asset.upload_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if ttl_seconds is None:
+            # 批量授权的签名上限取数据库记录到期时间，含重发和等待锁的情况。
+            ttl_seconds = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+            if ttl_seconds < 1:
+                raise UploadItemError(409, "上传授权已失效", code="authorization_expired")
+        return {
+            "reused": False,
+            "asset_id": asset.id,
+            "upload_method": "PUT",
+            "upload_url": storage.create_upload_url(
+                asset.object_key, asset.content_type, ttl_seconds, asset.expected_size_bytes
+            ),
+            "required_headers": {"Content-Type": asset.content_type, "If-None-Match": "*"},
+            "expires_at": expires_at,
+        }
+
+    def _replay_attachment_authorization(
+        self,
+        session: Session,
+        asset: MediaAsset,
+        body: UploadAuthorizationRequest,
+        storage: ObjectStorageService,
+    ) -> dict:
+        if asset.is_del:
+            raise UploadItemError(404, "原上传记录已删除", code="asset_unavailable")
+        metadata = (
+            asset.original_filename,
+            asset.media_type,
+            asset.content_type,
+            asset.expected_size_bytes,
+            asset.expected_sha256,
+        )
+        if metadata != (
+            body.filename,
+            body.media_type,
+            body.content_type,
+            body.size_bytes,
+            body.sha256.lower() if body.sha256 else None,
+        ):
+            raise UploadItemError(
+                409, "同一 client_file_id 已用于不同文件信息", code="file_id_conflict"
+            )
+        resolved = self._batch_completion_asset(session, asset, asset.object_key)
+        if resolved.upload_status in CONFIRMED_UPLOAD_STATES:
+            return {"reused": True, "asset_id": resolved.id}
+        self._require_pending_upload(resolved)
+        return self._signed_upload(resolved, storage)
+
     def create_upload_authorization(
         self,
         session: Session,
         user: User,
         body: UploadAuthorizationRequest,
         storage: ObjectStorageService,
+        *,
+        batch_file_id: uuid.UUID | None = None,
     ) -> dict:
         settings = get_settings()
         # 先缓存标量主键；后续预检回滚会使 ORM 对象过期，不能再通过 user.id 触发隐式查询。
@@ -637,22 +730,47 @@ class MemoryService:
             if body.purpose != "attachment":
                 self._require_source_owner(memory, role)
             self._require_contribution(session, memory, user, role)
+            batch_key = None
+            if batch_file_id is not None:
+                assert body.purpose == "attachment" and body.fragment_id is not None
+                batch_key = self.batch_attachment_upload_key(
+                    user_id, memory.id, body.fragment_id, batch_file_id
+                )
+                attempt = session.scalar(
+                    select(MediaAsset).where(MediaAsset.object_key == batch_key).with_for_update()
+                )
+                if attempt is not None:
+                    if attempt.uploaded_by_user_id != user_id:
+                        raise UploadItemError(404, "此上传记录不可用", code="asset_unavailable")
+                    return self._replay_attachment_authorization(session, attempt, body, storage)
             if body.sha256:
-                existing = session.scalar(
-                    select(MediaAsset).where(
-                        MediaAsset.uploaded_by_user_id == user_id,
-                        MediaAsset.purpose == body.purpose,
-                        MediaAsset.media_type == body.media_type,
-                        MediaAsset.content_sha256 == body.sha256.lower(),
-                        MediaAsset.size_bytes == body.size_bytes,
-                        MediaAsset.upload_status.in_(["uploaded", "attached"]),
-                        MediaAsset.is_del.is_(False),
-                    )
+                # [删除-旧] existing = session.scalar(
+                #     select(MediaAsset).where(
+                #         MediaAsset.uploaded_by_user_id == user_id,
+                #         MediaAsset.purpose == body.purpose,
+                #         MediaAsset.media_type == body.media_type,
+                #         MediaAsset.content_sha256 == body.sha256.lower(),
+                #         MediaAsset.size_bytes == body.size_bytes,
+                #         MediaAsset.upload_status.in_(["uploaded", "attached"]),
+                #         MediaAsset.is_del.is_(False),
+                #     )
+                # )
+                existing = self._find_confirmed_upload(
+                    session,
+                    user_id,
+                    body.purpose,
+                    body.media_type,
+                    body.sha256.lower(),
+                    body.size_bytes,
                 )
                 if existing is not None:
                     return {"reused": True, "asset_id": existing.id}
             # Store the grant target in the server-generated key so pending uploads can be reauthorized.
-            key = f"users/{user_id}/{body.purpose}/scope/{memory.id}/{body.fragment_id or 0}/{uuid.uuid4().hex}"
+            # [删除-旧] key = f"users/{user_id}/{body.purpose}/scope/{memory.id}/{body.fragment_id or 0}/{uuid.uuid4().hex}"
+            key = batch_key or (
+                f"users/{user_id}/{body.purpose}/scope/{memory.id}/"
+                f"{body.fragment_id or 0}/{uuid.uuid4().hex}"
+            )
             asset = MediaAsset(
                 uploaded_by_user_id=user_id,
                 purpose=body.purpose,
@@ -672,17 +790,16 @@ class MemoryService:
             )
             session.add(asset)
             session.flush()
-        url = storage.create_upload_url(
-            key, body.content_type, settings.object_storage_upload_ttl_seconds, body.size_bytes
-        )
-        return {
-            "reused": False,
-            "asset_id": asset.id,
-            "upload_method": "PUT",
-            "upload_url": url,
-            "required_headers": {"Content-Type": body.content_type, "If-None-Match": "*"},
-            "expires_at": expires_at,
-        }
+        # [删除-旧] url = storage.create_upload_url(
+        #     key, body.content_type, settings.object_storage_upload_ttl_seconds, body.size_bytes
+        # )
+        # return {
+        #     "reused": False, "asset_id": asset.id, "upload_method": "PUT", "upload_url": url,
+        #     "required_headers": {"Content-Type": body.content_type, "If-None-Match": "*"},
+        #     "expires_at": expires_at,
+        # }
+        ttl = settings.object_storage_upload_ttl_seconds if batch_file_id is None else None
+        return self._signed_upload(asset, storage, ttl)
 
     @staticmethod
     def _require_pending_upload(asset: MediaAsset) -> None:
@@ -690,7 +807,13 @@ class MemoryService:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if asset.upload_status != "pending_upload" or expires_at <= datetime.now(timezone.utc):
-            raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
+            # [删除-旧] raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
+            code = (
+                "authorization_expired"
+                if asset.upload_status in {"pending_upload", "expired"}
+                else "asset_unavailable"
+            )
+            raise UploadItemError(409, "上传授权已失效或素材状态不可确认", code=code)
 
     def _check_upload_scope(self, session: Session, user: User, key: str, *, lock: bool) -> None:
         parts = key.split("/")
@@ -715,6 +838,27 @@ class MemoryService:
             self._require_source_owner(memory, role)
         self._require_contribution(session, memory, user, role)
 
+    # [新增] 待确认对象与查重替身必须属于原批量尝试；已验证附件可以同账号跨片段复用。
+    def _batch_completion_asset(
+        self, session: Session, asset: MediaAsset, expected_key: str
+    ) -> MediaAsset:
+        if asset.purpose != "attachment" or (
+            asset.upload_status not in CONFIRMED_UPLOAD_STATES and asset.object_key != expected_key
+        ):
+            raise UploadItemError(404, "此素材不可用于该附件上传", code="asset_unavailable")
+        if asset.upload_status == "failed" and asset.content_sha256 and asset.size_bytes:
+            resolved = self._find_confirmed_upload(
+                session,
+                asset.uploaded_by_user_id,
+                asset.purpose,
+                asset.media_type,
+                asset.content_sha256,
+                asset.size_bytes,
+            )
+            if resolved is not None:
+                return resolved
+        return asset
+
     def complete_upload(
         self,
         session: Session,
@@ -722,9 +866,13 @@ class MemoryService:
         asset_id: int,
         body: UploadCompleteRequest,
         storage: ObjectStorageService,
+        *,
+        attachment_upload_key: str | None = None,
     ) -> MediaAsset:
         user_id = user.id
         asset = self._asset(session, user_id, asset_id)
+        if attachment_upload_key is not None:
+            asset = self._batch_completion_asset(session, asset, attachment_upload_key)
         if asset.upload_status in {"uploaded", "attached"}:
             return asset
         self._require_pending_upload(asset)
@@ -734,11 +882,18 @@ class MemoryService:
         expected_sha256, declared_type = asset.expected_sha256, asset.content_type
         # Release the read transaction while the object is being downloaded and hashed.
         session.rollback()
-        size, content_type, digest, prefix = storage.inspect_and_hash(
-            object_key,
-            expected_size,
-            validate_utf8=media_type == "text",
-        )
+        try:
+            size, content_type, digest, prefix = storage.inspect_and_hash(
+                object_key,
+                expected_size,
+                validate_utf8=media_type == "text",
+            )
+        except HTTPException as exc:
+            if attachment_upload_key is not None and exc.status_code == 409:
+                raise UploadItemError(
+                    409, str(exc.detail), code="upload_not_found", retryable=True
+                ) from exc
+            raise
         actual_type = content_type.split(";")[0].strip().lower()
         if size != expected_size or actual_type != declared_type.split(";")[0].strip().lower():
             raise HTTPException(status_code=422, detail="已上传文件的大小或类型与声明不符")
@@ -752,6 +907,8 @@ class MemoryService:
                 self._check_upload_scope(session, user, object_key, lock=True)
                 # Another request may have confirmed or linked the object during the hash check.
                 asset = self._asset(session, user_id, asset_id, lock=True)
+                if attachment_upload_key is not None:
+                    asset = self._batch_completion_asset(session, asset, attachment_upload_key)
                 if asset.upload_status in {"uploaded", "attached"}:
                     return asset
                 self._require_pending_upload(asset)
@@ -767,24 +924,33 @@ class MemoryService:
             with session.begin():
                 self._check_upload_scope(session, user, object_key, lock=True)
                 pending = self._asset(session, user_id, asset_id, lock=True)
+                if attachment_upload_key is not None:
+                    pending = self._batch_completion_asset(session, pending, attachment_upload_key)
                 if pending.upload_status in {"uploaded", "attached"}:
                     return pending
                 self._require_pending_upload(pending)
-                existing = session.scalar(
-                    select(MediaAsset).where(
-                        MediaAsset.id != asset_id,
-                        MediaAsset.uploaded_by_user_id == user_id,
-                        MediaAsset.purpose == purpose,
-                        MediaAsset.media_type == media_type,
-                        MediaAsset.content_sha256 == digest,
-                        MediaAsset.size_bytes == size,
-                        MediaAsset.upload_status.in_(["uploaded", "attached"]),
-                        MediaAsset.is_del.is_(False),
-                    )
+                # [删除-旧] existing = session.scalar(
+                #     select(MediaAsset).where(
+                #         MediaAsset.id != asset_id,
+                #         MediaAsset.uploaded_by_user_id == user_id,
+                #         MediaAsset.purpose == purpose,
+                #         MediaAsset.media_type == media_type,
+                #         MediaAsset.content_sha256 == digest,
+                #         MediaAsset.size_bytes == size,
+                #         MediaAsset.upload_status.in_(["uploaded", "attached"]),
+                #         MediaAsset.is_del.is_(False),
+                #     )
+                # )
+                existing = self._find_confirmed_upload(
+                    session, user_id, purpose, media_type, digest, size
                 )
                 if existing is None:
                     raise
                 pending.upload_status = "failed"
+                # [新增] 批量重试可用已校验的摘要找到真正的素材，即使未提交预期 SHA-256。
+                if purpose == "attachment" and object_key.rsplit("/", 1)[-1].startswith("batch-"):
+                    pending.content_sha256 = digest
+                    pending.size_bytes = size
                 pending.purge_after = datetime.now(timezone.utc) + timedelta(days=30)
                 pending.updated_by = user_id
             return existing
@@ -1099,6 +1265,45 @@ class MemoryService:
                     actor_id=user.id, reason="fragment_deleted",
                 )
 
+    # [新增] 两种附件入口共用关联写入和图谱复验触发。
+    @staticmethod
+    def _add_attachment_link(
+        session: Session,
+        fragment_id: int,
+        contributor_id: int,
+        user_id: int,
+        asset: MediaAsset,
+        item: AttachmentInput,
+    ) -> FragmentAttachment:
+        link = FragmentAttachment(
+            fragment_id=fragment_id,
+            media_asset_id=asset.id,
+            contributor_id=contributor_id,
+            caption=item.caption,
+            sort_order=item.sort_order,
+            created_by=user_id,
+            updated_by=user_id,
+        )
+        session.add(link)
+        asset.upload_status = "attached"
+        asset.updated_by = user_id
+        return link
+
+    @staticmethod
+    def _schedule_attachments_added(
+        session: Session, memory: MemorySession, fragment_id: int, user_id: int
+    ) -> None:
+        # 附件更动触发复核当前片段已有的有效说法。
+        if memory.visibility is not None:
+            schedule_material_validation(
+                session,
+                memory.owner_user_id,
+                memory.id,
+                fragment_id=fragment_id,
+                actor_id=user_id,
+                reason="attachments_added",
+            )
+
     def create_attachments(
         self,
         session: Session,
@@ -1155,26 +1360,27 @@ class MemoryService:
                     )
                 ):
                     raise HTTPException(status_code=409, detail="该素材已关联到此语音片段")
-                link = FragmentAttachment(
-                    fragment_id=fragment.id,
-                    media_asset_id=asset.id,
-                    contributor_id=contributor.id,
-                    caption=item.caption,
-                    sort_order=item.sort_order,
-                    created_by=user.id,
-                    updated_by=user.id,
+                # [删除-旧] link = FragmentAttachment(
+                #     fragment_id=fragment.id, media_asset_id=asset.id,
+                #     contributor_id=contributor.id, caption=item.caption, sort_order=item.sort_order,
+                #     created_by=user.id, updated_by=user.id,
+                # )
+                # session.add(link)
+                # asset.upload_status = "attached"
+                # asset.updated_by = user.id
+                result.append(
+                    self._add_attachment_link(
+                        session, fragment.id, contributor.id, user.id, asset, item
+                    )
                 )
-                session.add(link)
-                asset.upload_status = "attached"
-                asset.updated_by = user.id
-                result.append(link)
             session.flush()
-            # [新增] 附件更动触发复核当前片段已有的有效说法。
-            if memory.visibility is not None:
-                schedule_material_validation(
-                    session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
-                    actor_id=user.id, reason="attachments_added",
-                )
+            # [删除-旧] [新增] 附件更动触发复核当前片段已有的有效说法。
+            # if memory.visibility is not None:
+            #     schedule_material_validation(
+            #         session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
+            #         actor_id=user.id, reason="attachments_added",
+            #     )
+            self._schedule_attachments_added(session, memory, fragment.id, user.id)
             return [self._attachment_response(session, link, storage) for link in result]
 
     def _attachment_response(
