@@ -663,6 +663,69 @@ class MemoryService:
         self._require_pending_upload(resolved)
         return self._signed_upload(resolved, storage)
 
+    # [新增] 有效关联按 ID 选择，文件被保留多次时也能返回稳定的代表关联。
+    @staticmethod
+    def _active_attachment_id(session: Session, fragment_id: int, asset_id: int) -> int | None:
+        return session.scalar(
+            select(FragmentAttachment.id)
+            .where(
+                FragmentAttachment.fragment_id == fragment_id,
+                FragmentAttachment.media_asset_id == asset_id,
+                FragmentAttachment.is_del.is_(False),
+            )
+            .order_by(FragmentAttachment.id)
+            .limit(1)
+        )
+
+    @staticmethod
+    def _attachment_operation(
+        session: Session, fragment_id: int, user_id: int, client_file_id: uuid.UUID
+    ) -> FragmentAttachment | None:
+        # 软删除后保留操作记录，旧请求重放时不能重新创建附件。
+        link = session.scalar(
+            select(FragmentAttachment).where(
+                FragmentAttachment.fragment_id == fragment_id,
+                FragmentAttachment.created_by == user_id,
+                FragmentAttachment.client_file_id == client_file_id,
+            )
+        )
+        if link is not None and link.is_del:
+            raise UploadItemError(409, "此次操作创建的附件已删除", code="attachment_deleted")
+        return link
+
+    @staticmethod
+    def _pending_attachment_grant(
+        session: Session, user_id: int, batch_key: str, body: UploadAuthorizationRequest, digest: str
+    ) -> dict | None:
+        # 调用方持有片段锁。同一片段的并行询问共用已有的直传对象键。
+        prefix = batch_key.rsplit("-", 1)[0] + "-"
+        pending = session.scalar(
+            select(MediaAsset)
+            .where(
+                MediaAsset.uploaded_by_user_id == user_id,
+                MediaAsset.purpose == "attachment",
+                MediaAsset.media_type == body.media_type,
+                MediaAsset.expected_size_bytes == body.size_bytes,
+                MediaAsset.expected_sha256 == digest,
+                MediaAsset.object_key.startswith(prefix, autoescape=True),
+                MediaAsset.upload_status == "pending_upload",
+                MediaAsset.upload_expires_at > datetime.now(timezone.utc),
+                MediaAsset.is_del.is_(False),
+            )
+            .order_by(MediaAsset.id)
+            .limit(1)
+        )
+        if pending is None:
+            return None
+        expires_at = pending.upload_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return {
+            "asset_id": pending.id,
+            "representative_client_file_id": uuid.UUID(hex=pending.object_key[len(prefix) :]),
+            "expires_at": expires_at,
+        }
+
     def create_upload_authorization(
         self,
         session: Session,
@@ -671,6 +734,7 @@ class MemoryService:
         storage: ObjectStorageService,
         *,
         batch_file_id: uuid.UUID | None = None,
+        ask_about_attachment_duplicates: bool = False,
     ) -> dict:
         settings = get_settings()
         # 先缓存标量主键；后续预检回滚会使 ORM 对象过期，不能再通过 user.id 触发隐式查询。
@@ -736,13 +800,42 @@ class MemoryService:
                 batch_key = self.batch_attachment_upload_key(
                     user_id, memory.id, body.fragment_id, batch_file_id
                 )
+                if ask_about_attachment_duplicates:
+                    # [新增] 先查操作级幂等记录，再决定是否需要签发或复用文件。
+                    link = self._attachment_operation(
+                        session, body.fragment_id, user_id, batch_file_id
+                    )
+                    if link is not None:
+                        linked_asset = self._asset(session, user_id, link.media_asset_id)
+                        if (
+                            linked_asset.media_type != body.media_type
+                            or linked_asset.size_bytes != body.size_bytes
+                            or (body.sha256 and linked_asset.content_sha256 != body.sha256.lower())
+                        ):
+                            raise UploadItemError(
+                                409,
+                                "同一 client_file_id 已用于其他文件",
+                                code="file_id_conflict",
+                            )
+                        return {
+                            "reused": True,
+                            "asset_id": link.media_asset_id,
+                            "attachment_id": link.id,
+                            "operation_replay": True,
+                        }
                 attempt = session.scalar(
                     select(MediaAsset).where(MediaAsset.object_key == batch_key).with_for_update()
                 )
                 if attempt is not None:
                     if attempt.uploaded_by_user_id != user_id:
                         raise UploadItemError(404, "此上传记录不可用", code="asset_unavailable")
-                    return self._replay_attachment_authorization(session, attempt, body, storage)
+                    # [删除-旧] return self._replay_attachment_authorization(session, attempt, body, storage)
+                    grant = self._replay_attachment_authorization(session, attempt, body, storage)
+                    if ask_about_attachment_duplicates and grant["reused"]:
+                        grant["attachment_id"] = self._active_attachment_id(
+                            session, body.fragment_id, grant["asset_id"]
+                        )
+                    return grant
             if body.sha256:
                 # [删除-旧] existing = session.scalar(
                 #     select(MediaAsset).where(
@@ -764,7 +857,19 @@ class MemoryService:
                     body.size_bytes,
                 )
                 if existing is not None:
-                    return {"reused": True, "asset_id": existing.id}
+                    # [删除-旧] return {"reused": True, "asset_id": existing.id}
+                    grant = {"reused": True, "asset_id": existing.id}
+                    if ask_about_attachment_duplicates and body.fragment_id is not None:
+                        grant["attachment_id"] = self._active_attachment_id(
+                            session, body.fragment_id, existing.id
+                        )
+                    return grant
+                if ask_about_attachment_duplicates and batch_key is not None:
+                    pending = self._pending_attachment_grant(
+                        session, user_id, batch_key, body, body.sha256.lower()
+                    )
+                    if pending is not None:
+                        return pending
             # Store the grant target in the server-generated key so pending uploads can be reauthorized.
             # [删除-旧] key = f"users/{user_id}/{body.purpose}/scope/{memory.id}/{body.fragment_id or 0}/{uuid.uuid4().hex}"
             key = batch_key or (
@@ -1274,6 +1379,8 @@ class MemoryService:
         user_id: int,
         asset: MediaAsset,
         item: AttachmentInput,
+        *,
+        client_file_id: uuid.UUID | None = None,
     ) -> FragmentAttachment:
         link = FragmentAttachment(
             fragment_id=fragment_id,
@@ -1281,6 +1388,7 @@ class MemoryService:
             contributor_id=contributor_id,
             caption=item.caption,
             sort_order=item.sort_order,
+            client_file_id=client_file_id,
             created_by=user_id,
             updated_by=user_id,
         )

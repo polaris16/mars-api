@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.db.database import get_db
@@ -51,8 +52,8 @@ def _image(content, **options):
     }
 
 
-def _batch(client, path, headers, items):
-    reply = client.post(path, headers=headers, json={"items": items})
+def _batch(client, path, headers, items, **options):
+    reply = client.post(path, headers=headers, json={"items": items, **options})
     assert reply.status_code == 200, reply.text
     results = reply.json()["items"]
     assert [result["client_file_id"] for result in results] == [
@@ -214,6 +215,46 @@ def test_canonical_asset_and_attachment_are_recovered_after_deduplication(memory
     )
 
 
+def test_attachment_schema_allows_copies_and_reserves_operation_id_after_deletion(memory_api):
+    """[新增] 使用现有接口创建附件，再直接验证关联表的约束。"""
+    client, owner, attachments = memory_api
+    picture = PNG + b"photo with copies"
+    authorize = f"{attachments}/batch-upload-authorizations"
+    grant = _batch(client, authorize, owner, [_image(picture)])[0]
+    _put(client, grant, picture)
+    attached = _batch(
+        client, f"{attachments}/batch-complete-and-attach", owner, [_completion(grant)]
+    )[0]
+    assert attached["status"] == "attached"
+
+    with contextmanager(app.dependency_overrides[get_db])() as db:
+        with db.begin():
+            original = db.get(FragmentAttachment, attached["attachment_id"])
+            assert original.client_file_id is None
+            shared = {
+                "fragment_id": original.fragment_id,
+                "media_asset_id": original.media_asset_id,
+                "contributor_id": original.contributor_id,
+            }
+            creator = original.created_by
+            assert creator is not None
+            first_operation = uuid4()
+            first_copy = FragmentAttachment(
+                **shared, created_by=creator, client_file_id=first_operation
+            )
+            second_copy = FragmentAttachment(**shared, created_by=creator, client_file_id=uuid4())
+            db.add_all([first_copy, second_copy])
+            db.flush()
+            assert len({original.id, first_copy.id, second_copy.id}) == 3
+            first_copy.is_del = True
+
+        with pytest.raises(IntegrityError), db.begin():
+            db.add(FragmentAttachment(**shared, created_by=creator, client_file_id=first_operation))
+
+        with pytest.raises(IntegrityError), db.begin():
+            db.add(FragmentAttachment(**shared, client_file_id=uuid4()))
+
+
 def test_batch_validates_scope_file_id_and_legacy_recording_purpose(memory_api):
     client, owner, attachments = memory_api
     other = _new_fragment(client, owner)
@@ -328,3 +369,334 @@ def test_batch_checks_contributor_consent_again_after_hashing(memory_api, monkey
         asset = db.scalar(select(MediaAsset).where(MediaAsset.id == grant["asset_id"]))
         assert asset.upload_status == "pending_upload"
     assert client.get(attachments, headers=owner).json() == []
+
+
+def test_ask_batch_uploads_once_and_links_only_the_selected_copies(memory_api, monkeypatch):
+    """[新增] 跨过重复项只新增原关联，明确保留的关联有独立说明和顺序。"""
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"original photo"
+    digest = sha256(photo).hexdigest()
+    items = [_image(photo, sha256=digest) for _ in range(2)]
+    items.append(_image(photo, sha256=digest.upper(), filename="副本.png"))
+    first, duplicate_to_skip, duplicate_to_keep = _batch(
+        client, authorize, owner, items, duplicate_mode="ask"
+    )
+    assert first["status"] == "upload_required"
+    for duplicate in (duplicate_to_skip, duplicate_to_keep):
+        assert duplicate["status"] == "duplicate" and duplicate["reason"] == "same_batch"
+        assert duplicate["representative_client_file_id"] == first["client_file_id"]
+        assert duplicate["asset_id"] == first["asset_id"]
+        assert "upload_url" not in duplicate
+    _put(client, first, photo)
+
+    inspect = ObjectStorageService.inspect_and_hash
+    verified_keys = []
+
+    def track_verification(storage, key, max_bytes, *, validate_utf8=False):
+        verified_keys.append(key)
+        return inspect(storage, key, max_bytes, validate_utf8=validate_utf8)
+
+    monkeypatch.setattr(ObjectStorageService, "inspect_and_hash", track_verification)
+    keep = _completion(
+        duplicate_to_keep,
+        duplicate_action="keep",
+        representative_client_file_id=first["client_file_id"],
+        caption="副本说明",
+        sort_order=1,
+    )
+    skip = _completion(
+        duplicate_to_skip,
+        duplicate_action="skip",
+        representative_client_file_id=first["client_file_id"],
+    )
+    # App 即使先传入依赖项，也会先校验并关联代表项，响应顺序仍与请求一致。
+    saved, skipped, original = _batch(
+        client, complete, owner, [keep, skip, _completion(first)], duplicate_mode="ask"
+    )
+    assert len(verified_keys) == 1
+    assert saved["status"] == original["status"] == "attached"
+    assert saved["attachment_id"] != original["attachment_id"]
+    assert skipped["status"] == "skipped" and skipped["attachment_id"] == original["attachment_id"]
+    active = client.get(attachments, headers=owner).json()
+    assert [row["id"] for row in active] == [original["attachment_id"], saved["attachment_id"]]
+    assert active[1]["caption"] == "副本说明"
+    with contextmanager(app.dependency_overrides[get_db])() as db:
+        assert db.scalars(select(MediaAsset.id)).all() == [first["asset_id"]]
+
+
+def test_ask_split_batch_reuses_attachment_and_soft_deleted_operation_stays_deleted(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    picture = PNG + b"same file across batches"
+    item = _image(picture, sha256=sha256(picture).hexdigest())
+    original = _batch(client, authorize, owner, [item], duplicate_mode="ask")[0]
+    _put(client, original, picture)
+    original_link = _batch(client, complete, owner, [_completion(original)], duplicate_mode="ask")[
+        0
+    ]
+
+    new_item = _image(picture, sha256=item["sha256"])
+    candidate = _batch(client, authorize, owner, [new_item], duplicate_mode="ask")[0]
+    assert candidate["reason"] == "existing_attachment"
+    assert candidate["attachment_id"] == original_link["attachment_id"]
+    pending_choice = _batch(
+        client, complete, owner, [_completion(candidate)], duplicate_mode="ask"
+    )[0]
+    assert pending_choice["status"] == "duplicate"
+    assert (
+        _batch(
+            client,
+            complete,
+            owner,
+            [_completion(candidate, duplicate_action="skip")],
+            duplicate_mode="ask",
+        )[0]["status"]
+        == "skipped"
+    )
+    assert len(client.get(attachments, headers=owner).json()) == 1
+
+    keep = _completion(candidate, duplicate_action="keep")
+    saved = _batch(client, complete, owner, [keep], duplicate_mode="ask")[0]
+    assert saved["status"] == "attached"
+    assert _batch(client, complete, owner, [keep], duplicate_mode="ask")[0] == {
+        **saved,
+        "status": "already_attached",
+    }
+    assert (
+        _batch(client, authorize, owner, [new_item], duplicate_mode="ask")[0]["attachment_id"]
+        == (saved["attachment_id"])
+    )
+    assert (
+        _batch(client, authorize, owner, [{**new_item, "sha256": "a" * 64}], duplicate_mode="ask")[
+            0
+        ]["error"]["code"]
+        == "file_id_conflict"
+    )
+
+    assert (
+        client.delete(f"{attachments}/{saved['attachment_id']}", headers=owner).status_code == 200
+    )
+    remaining = client.get(attachments, headers=owner).json()
+    assert [row["id"] for row in remaining] == [original_link["attachment_id"]]
+    assert (
+        client.get(f"{ASSETS}/{candidate['asset_id']}", headers=owner).json()["upload_status"]
+        == "attached"
+    )
+    for path, request in ((authorize, new_item), (complete, keep)):
+        gone = _batch(client, path, owner, [request], duplicate_mode="ask")[0]
+        assert gone["error"]["code"] == "attachment_deleted" and not gone["error"]["retryable"]
+
+
+def test_ask_split_pending_reuses_only_same_fragment_and_can_recover_after_expiry(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"one pending upload"
+    digest = sha256(photo).hexdigest()
+    original = _image(photo, sha256=digest)
+    first = _batch(client, authorize, owner, [original], duplicate_mode="ask")[0]
+    later_item = _image(photo, sha256=digest)
+    later = _batch(client, authorize, owner, [later_item], duplicate_mode="ask")[0]
+    assert later["status"] == "duplicate" and later["reason"] == "pending_upload"
+    assert later["representative_client_file_id"] == first["client_file_id"]
+    assert later["expires_at"] == first["expires_at"]
+
+    other = _new_fragment(client, owner)
+    other_grant = _batch(
+        client, f"{other}/batch-upload-authorizations", owner, [later_item], duplicate_mode="ask"
+    )[0]
+    assert (
+        other_grant["status"] == "upload_required" and other_grant["asset_id"] != first["asset_id"]
+    )
+    wrong_scope = _completion(
+        later, duplicate_action="keep", representative_client_file_id=first["client_file_id"]
+    )
+    assert (
+        _batch(
+            client, f"{other}/batch-complete-and-attach", owner, [wrong_scope], duplicate_mode="ask"
+        )[0]["error"]["code"]
+        == "asset_unavailable"
+    )
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        db.get(MediaAsset, first["asset_id"]).upload_expires_at = datetime.now(
+            timezone.utc
+        ) - timedelta(seconds=5)
+    assert _batch(client, complete, owner, [wrong_scope], duplicate_mode="ask")[0]["error"][
+        "code"
+    ] == ("authorization_expired")
+    replacement = _batch(client, authorize, owner, [later_item], duplicate_mode="ask")[0]
+    assert (
+        replacement["status"] == "upload_required" and replacement["asset_id"] != first["asset_id"]
+    )
+
+
+def test_ask_duplicate_found_during_verification_waits_for_decision(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"duplicate without declared digest"
+    first, second = _batch(
+        client, authorize, owner, [_image(photo), _image(photo)], duplicate_mode="ask"
+    )
+    assert first["asset_id"] != second["asset_id"]
+    _put(client, first, photo)
+    _put(client, second, photo)
+    original, decision = _batch(
+        client, complete, owner, [_completion(first), _completion(second)], duplicate_mode="ask"
+    )
+    assert decision["status"] == "duplicate"
+    assert decision["attachment_id"] == original["attachment_id"]
+    assert decision["asset_id"] == original["asset_id"]
+    assert len(client.get(attachments, headers=owner).json()) == 1
+    # App 可沿用原授权 ID，服务端会找到校验后保留的素材。
+    keep = _completion(second, duplicate_action="keep")
+    saved = _batch(client, complete, owner, [keep], duplicate_mode="ask")[0]
+    assert saved["status"] == "attached" and saved["asset_id"] == original["asset_id"]
+    assert _batch(client, complete, owner, [keep], duplicate_mode="ask")[0] == {
+        **saved,
+        "status": "already_attached",
+    }
+
+
+def test_ask_representative_failure_is_shared_and_unrelated_file_succeeds(memory_api, monkeypatch):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo, other = PNG + b"photo", PNG + b"other"
+    items = [_image(photo, sha256=sha256(photo).hexdigest()) for _ in range(2)] + [_image(other)]
+    first, duplicate, independent = _batch(client, authorize, owner, items, duplicate_mode="ask")
+    _put(client, first, other)
+    _put(client, independent, other)
+    inspect = ObjectStorageService.inspect_and_hash
+    attempts = []
+
+    def track_verification(storage, key, max_bytes, *, validate_utf8=False):
+        attempts.append(key)
+        return inspect(storage, key, max_bytes, validate_utf8=validate_utf8)
+
+    monkeypatch.setattr(ObjectStorageService, "inspect_and_hash", track_verification)
+    failed, dependent, saved = _batch(
+        client,
+        complete,
+        owner,
+        [
+            _completion(first),
+            _completion(
+                duplicate,
+                duplicate_action="keep",
+                representative_client_file_id=first["client_file_id"],
+            ),
+            _completion(independent),
+        ],
+        duplicate_mode="ask",
+    )
+    assert failed["error"] == dependent["error"] and failed["error"]["code"] == "file_mismatch"
+    assert saved["status"] == "attached" and len(attempts) == 2
+
+
+def test_ask_kept_copies_each_use_one_slot_and_existing_operations_replay_at_limit(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"photo"
+    items = [_image(photo, sha256=sha256(photo).hexdigest()) for _ in range(9)]
+    representative, *copies = _batch(client, authorize, owner, items, duplicate_mode="ask")
+    _put(client, representative, photo)
+    request = [_completion(representative)] + [
+        _completion(
+            copy,
+            duplicate_action="keep",
+            representative_client_file_id=representative["client_file_id"],
+        )
+        for copy in copies
+    ]
+    saved = _batch(client, complete, owner, request, duplicate_mode="ask")
+    assert {row["status"] for row in saved} == {"attached"}
+    assert len({row["attachment_id"] for row in saved}) == 9
+    assert _batch(client, complete, owner, request, duplicate_mode="ask") == [
+        {**row, "status": "already_attached"} for row in saved
+    ]
+    extra = _batch(
+        client, authorize, owner, [_image(photo, sha256=items[0]["sha256"])], duplicate_mode="ask"
+    )[0]
+    assert (
+        _batch(
+            client,
+            complete,
+            owner,
+            [_completion(extra, duplicate_action="keep")],
+            duplicate_mode="ask",
+        )[0]["error"]["code"]
+        == "attachment_limit_reached"
+    )
+    assert (
+        _batch(
+            client,
+            complete,
+            owner,
+            [_completion(extra, duplicate_action="skip")],
+            duplicate_mode="ask",
+        )[0]["status"]
+        == "skipped"
+    )
+
+
+def test_ask_requires_direct_representative_for_same_asset(memory_api):
+    client, owner, attachments = memory_api
+    complete = f"{attachments}/batch-complete-and-attach"
+    first_id, later_id = str(uuid4()), str(uuid4())
+    first = {"client_file_id": first_id, "asset_id": 1}
+    later = {"client_file_id": later_id, "asset_id": 2, "representative_client_file_id": first_id}
+    for payload in (
+        {"items": [{**first, "duplicate_action": "keep"}]},
+        {"duplicate_mode": "ask", "items": [first, later]},
+        {"duplicate_mode": "ask", "items": [{**first, "representative_client_file_id": first_id}]},
+    ):
+        assert client.post(complete, headers=owner, json=payload).status_code == 422
+
+
+def test_ask_reuses_verified_file_across_fragments_but_not_across_accounts(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    picture = PNG + b"photo"
+    digest = sha256(picture).hexdigest()
+    first = _batch(client, authorize, owner, [_image(picture, sha256=digest)])[0]
+    _put(client, first, picture)
+    _batch(client, complete, owner, [_completion(first)])
+
+    relative = login(client, "13800000002")
+    _, _, contributor_id = register_material_contributor(client, owner, relative, "contributor")
+    consent = client.patch(
+        f"{CONTRIBUTORS}/{contributor_id}/consent",
+        headers=relative,
+        json={"consent_status": "accepted"},
+    )
+    assert consent.status_code == 200
+    foreign = _batch(
+        client, authorize, relative, [_image(picture, sha256=digest)], duplicate_mode="ask"
+    )[0]
+    assert foreign["status"] == "upload_required" and foreign["asset_id"] != first["asset_id"]
+
+    other_fragment = _new_fragment(client, owner)
+    different_picture = PNG + b"other"
+    grants = _batch(
+        client,
+        f"{other_fragment}/batch-upload-authorizations",
+        owner,
+        [
+            _image(picture, sha256=digest),
+            _image(picture, sha256=digest),
+            _image(different_picture, sha256=sha256(different_picture).hexdigest()),
+        ],
+        duplicate_mode="ask",
+    )
+    reused, duplicate, distinct = grants
+    assert reused["status"] == "reused" and reused["asset_id"] == first["asset_id"]
+    assert duplicate["reason"] == "same_batch"
+    assert duplicate["representative_client_file_id"] == reused["client_file_id"]
+    # 文件名相同，摘要不同，仍然单独上传。
+    assert distinct["status"] == "upload_required" and distinct["asset_id"] != reused["asset_id"]

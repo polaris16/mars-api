@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     text,
 )
+from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.base import Base
 
@@ -22,12 +23,32 @@ class FragmentAttachment(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_fragment_attachment_pkey"),
         CheckConstraint("sort_order >= 0", name="ck_t_fragment_attachment_sort_order"),
+        # [删除-旧] 同一片段的有效附件只能关联同一个文件一次。
+        # Index(
+        #     "uq_t_fragment_attachment_active_asset",
+        #     "fragment_id",
+        #     "media_asset_id",
+        #     unique=True,
+        #     postgresql_where=text("is_del = false"),
+        # ),
+        # [新增] 每条附件关联可以独立保留，软删除后仍保留其操作标识。
+        CheckConstraint(
+            "client_file_id IS NULL OR created_by IS NOT NULL",
+            name="ck_t_fragment_attachment_client_file_creator",
+        ),
         Index(
-            "uq_t_fragment_attachment_active_asset",
+            "idx_t_fragment_attachment_active_asset",
             "fragment_id",
             "media_asset_id",
-            unique=True,
             postgresql_where=text("is_del = false"),
+        ),
+        Index(
+            "uq_t_fragment_attachment_client_file",
+            "fragment_id",
+            "created_by",
+            "client_file_id",
+            unique=True,
+            postgresql_where=text("client_file_id IS NOT NULL"),
         ),
         Index("idx_t_fragment_attachment_order", "fragment_id", "sort_order", "id"),
         {"comment": "语音片段与多媒体素材关联表"},
@@ -60,6 +81,10 @@ class FragmentAttachment(Base):
         ),
         nullable=False,
         comment="添加附件的提供者ID",
+    )
+    # [新增] 兼容没有操作标识的历史附件和既有创建流程。
+    client_file_id = Column(
+        UUID(as_uuid=True), nullable=True, comment="客户端新建附件关联的操作标识"
     )
     caption = Column(String(200), nullable=True, comment="附件说明")
     sort_order = Column(Integer, nullable=False, server_default=text("0"), comment="展示顺序")

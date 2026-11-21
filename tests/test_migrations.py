@@ -253,3 +253,43 @@ def test_friend_request_message_migration_adds_only_nullable_message():
     output.truncate()
     command.downgrade(config, "20261121_03:20261121_02", sql=True)
     assert "ALTER TABLE t_user_relationship DROP COLUMN request_message;" in output.getvalue()
+
+
+def test_attachment_copy_migration_keeps_existing_links_and_restores_unique_index_first():
+    """[新增] 检查 PostgreSQL 升级、回退及索引的生效范围。"""
+    output = StringIO()
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"), output_buffer=output)
+    command.upgrade(config, "20261121_03:20261122_01", sql=True)
+    upgrade_sql = output.getvalue()
+    column = Base.metadata.tables["t_fragment_attachment"].c.client_file_id
+    assert column.nullable and column.server_default is None
+    assert "ALTER TABLE t_fragment_attachment ADD COLUMN client_file_id UUID;" in upgrade_sql
+    assert (
+        f"COMMENT ON COLUMN t_fragment_attachment.client_file_id IS '{column.comment}';"
+        in upgrade_sql
+    )
+    assert "CHECK (client_file_id IS NULL OR created_by IS NOT NULL)" in upgrade_sql
+    assert (
+        "CREATE INDEX idx_t_fragment_attachment_active_asset ON t_fragment_attachment "
+        "(fragment_id, media_asset_id) WHERE is_del = false;" in upgrade_sql
+    )
+    assert (
+        "CREATE UNIQUE INDEX uq_t_fragment_attachment_client_file ON t_fragment_attachment "
+        "(fragment_id, created_by, client_file_id) WHERE client_file_id IS NOT NULL;" in upgrade_sql
+    )
+    assert upgrade_sql.index("CREATE INDEX idx_t_fragment_attachment_active_asset") < (
+        upgrade_sql.index("DROP INDEX uq_t_fragment_attachment_active_asset")
+    )
+    assert "UPDATE t_fragment_attachment" not in upgrade_sql
+    assert "DELETE FROM t_fragment_attachment" not in upgrade_sql
+
+    output.seek(0)
+    output.truncate()
+    command.downgrade(config, "20261122_01:20261121_03", sql=True)
+    downgrade_sql = output.getvalue()
+    assert downgrade_sql.index(
+        "CREATE UNIQUE INDEX uq_t_fragment_attachment_active_asset ON t_fragment_attachment "
+        "(fragment_id, media_asset_id) WHERE is_del = false;"
+    ) < downgrade_sql.index("DROP INDEX idx_t_fragment_attachment_active_asset")
+    assert "ALTER TABLE t_fragment_attachment DROP COLUMN client_file_id;" in downgrade_sql
+    assert "DELETE FROM t_fragment_attachment" not in downgrade_sql

@@ -63,6 +63,9 @@ class AttachmentUploadService:
         storage: ObjectStorageService,
     ) -> dict:
         self._check_target(db, user, fragment_id)
+        ask = body.duplicate_mode == "ask"
+        representatives: dict[int, UUID] = {}
+        upload_grants: dict[UUID, int] = {}
         results = []
         for item in body.items:
             try:
@@ -76,15 +79,43 @@ class AttachmentUploadService:
                     ),
                     storage,
                     batch_file_id=item.client_file_id,
+                    ask_about_attachment_duplicates=ask,
                 )
             except HTTPException as exc:
                 db.rollback()
                 results.append(self._item_error(item.client_file_id, exc, authorizing=True))
             else:
-                item_status = "reused" if grant.pop("reused") else "upload_required"
-                results.append(
-                    {**grant, "client_file_id": item.client_file_id, "status": item_status}
-                )
+                # [删除-旧] item_status = "reused" if grant.pop("reused") else "upload_required"
+                # results.append({**grant, "client_file_id": item.client_file_id, "status": item_status})
+                result = {**grant, "client_file_id": item.client_file_id}
+                pending_representative = grant.get("representative_client_file_id")
+                batch_representative = representatives.get(grant["asset_id"])
+                if pending_representative is not None:
+                    result.update(status="duplicate", reason="pending_upload")
+                elif grant.get("operation_replay"):
+                    result.update(status="already_attached")
+                elif grant.get("attachment_id") is not None:
+                    result.update(status="duplicate", reason="existing_attachment")
+                elif ask and grant["reused"] and batch_representative is not None:
+                    result.update(
+                        status="duplicate",
+                        reason="same_batch",
+                        representative_client_file_id=batch_representative,
+                    )
+                else:
+                    result.update(status="reused" if grant["reused"] else "upload_required")
+                    if ask:
+                        if grant["reused"]:
+                            representatives[grant["asset_id"]] = item.client_file_id
+                        else:
+                            upload_grants[item.client_file_id] = grant["asset_id"]
+                results.append(result)
+        # [新增] 代表项实际取得本批直传授权才算本批重复，已失败的授权不参与依赖。
+        for result in results:
+            if result.get("reason") == "pending_upload" and (
+                upload_grants.get(result["representative_client_file_id"]) == result["asset_id"]
+            ):
+                result["reason"] = "same_batch"
         return {"items": results}
 
     def complete_and_attach(
@@ -97,37 +128,94 @@ class AttachmentUploadService:
     ) -> dict:
         memory_id = self._check_target(db, user, fragment_id)
         user_id = user.id
-        results = []
-        for item in body.items:
+        ask = body.duplicate_mode == "ask"
+        # [新增] 先完成代表项，再处理依赖项。响应仍按 App 传入的顺序返回。
+        results: dict[UUID, dict] = {}
+        verification_errors: dict[tuple[int, str], HTTPException] = {}
+        items = sorted(body.items, key=lambda item: item.representative_client_file_id is not None)
+        for item in items:
             try:
-                asset = self.memory.complete_upload(
-                    db,
-                    user,
-                    item.asset_id,
-                    UploadCompleteRequest(
-                        duration_ms=item.duration_ms, sample_rate_hz=item.sample_rate_hz
-                    ),
-                    storage,
-                    attachment_upload_key=self.memory.batch_attachment_upload_key(
-                        user_id, memory_id, fragment_id, item.client_file_id
-                    ),
+                upload_key = self.memory.batch_attachment_upload_key(
+                    user_id,
+                    memory_id,
+                    fragment_id,
+                    item.representative_client_file_id or item.client_file_id,
                 )
-                asset_id = asset.id
+                # [删除-旧] asset = self.memory.complete_upload(
+                #     db, user, item.asset_id,
+                #     UploadCompleteRequest(duration_ms=item.duration_ms, sample_rate_hz=item.sample_rate_hz),
+                #     storage, attachment_upload_key=self.memory.batch_attachment_upload_key(
+                #         user_id, memory_id, fragment_id, item.client_file_id
+                #     ),
+                # )
+                # asset_id = asset.id
+                asset_id = self._verify_file(
+                    db, user, user_id, fragment_id, item, storage, upload_key, verification_errors
+                )
                 # 确认结果独立提交，写入关联之前结束可能由素材读取开启的事务。
                 db.rollback()
-                result = self._attach(db, user, user_id, fragment_id, asset_id, item)
+                result = self._attach(db, user, user_id, fragment_id, asset_id, item, ask=ask)
             except HTTPException as exc:
                 db.rollback()
                 result = self._item_error(item.client_file_id, exc, authorizing=False)
-            except OSError:
-                db.rollback()
-                result = self._item_error(
-                    item.client_file_id,
-                    HTTPException(502, "对象存储暂时无法读取附件"),
-                    authorizing=False,
-                )
-            results.append(result)
-        return {"items": results}
+            # [删除-旧] except OSError:
+            #     db.rollback()
+            #     result = self._item_error(
+            #         item.client_file_id,
+            #         HTTPException(502, "对象存储暂时无法读取附件"),
+            #         authorizing=False,
+            #     )
+            results[item.client_file_id] = result
+        return {"items": [results[item.client_file_id] for item in body.items]}
+
+    # [新增] 同一批次的依赖项复用代表项的校验结果。失败后等下一批重试。
+    def _verify_file(
+        self,
+        db: Session,
+        user: User,
+        user_id: int,
+        fragment_id: int,
+        item: AttachmentCompleteItem,
+        storage: ObjectStorageService,
+        upload_key: str,
+        verification_errors: dict[tuple[int, str], HTTPException],
+    ) -> int:
+        operation = self.memory._attachment_operation(db, fragment_id, user_id, item.client_file_id)
+        if operation is not None and operation.media_asset_id != item.asset_id:
+            requested = self.memory._asset(db, user_id, item.asset_id)
+            resolved = self.memory._batch_completion_asset(db, requested, upload_key)
+            self._check_operation_asset(operation, resolved.id)
+
+        verification_key = (item.asset_id, upload_key)
+        previous_error = verification_errors.get(verification_key)
+        if previous_error is not None:
+            raise previous_error
+        try:
+            asset = self.memory.complete_upload(
+                db,
+                user,
+                item.asset_id,
+                UploadCompleteRequest(
+                    duration_ms=item.duration_ms, sample_rate_hz=item.sample_rate_hz
+                ),
+                storage,
+                attachment_upload_key=upload_key,
+            )
+        except HTTPException as exc:
+            verification_errors[verification_key] = exc
+            raise
+        except OSError as exc:
+            error = HTTPException(502, "对象存储暂时无法读取附件")
+            verification_errors[verification_key] = error
+            raise error from exc
+        return asset.id
+
+    @staticmethod
+    def _check_operation_asset(operation: FragmentAttachment, asset_id: int) -> None:
+        if operation.media_asset_id != asset_id:
+            raise UploadItemError(
+                409, "同一 client_file_id 已用于其他文件", code="file_id_conflict"
+            )
 
     def _attach(
         self,
@@ -137,6 +225,8 @@ class AttachmentUploadService:
         fragment_id: int,
         asset_id: int,
         item: AttachmentCompleteItem,
+        *,
+        ask: bool,
     ) -> dict:
         with db.begin():
             _, memory, role = self.memory._fragment_access(db, user_id, fragment_id, lock=True)
@@ -148,14 +238,29 @@ class AttachmentUploadService:
                 FragmentAttachment.fragment_id == fragment_id,
                 FragmentAttachment.is_del.is_(False),
             )
-            attachment_id = db.scalar(
-                select(FragmentAttachment.id).where(
-                    *active, FragmentAttachment.media_asset_id == asset.id
-                )
-            )
+            # [删除-旧] attachment_id = db.scalar(
+            #     select(FragmentAttachment.id).where(*active, FragmentAttachment.media_asset_id == asset.id)
+            # )
             result = {"client_file_id": item.client_file_id, "asset_id": asset.id}
-            if attachment_id is not None:
-                return {**result, "status": "already_attached", "attachment_id": attachment_id}
+            # [新增] 操作级幂等优先于按文件查重。保留多份后仍返回该操作的关联 ID。
+            operation = self.memory._attachment_operation(
+                db, fragment_id, user_id, item.client_file_id
+            )
+            if operation is not None:
+                self._check_operation_asset(operation, asset.id)
+                return {**result, "status": "already_attached", "attachment_id": operation.id}
+            attachment_id = self.memory._active_attachment_id(db, fragment_id, asset.id)
+            if item.duplicate_action == "skip":
+                return {**result, "status": "skipped", "attachment_id": attachment_id}
+            if item.duplicate_action != "keep" and (
+                attachment_id is not None or item.representative_client_file_id is not None
+            ):
+                # [删除-旧] return {**result, "status": "already_attached", "attachment_id": attachment_id}
+                return {
+                    **result,
+                    "status": "duplicate" if ask else "already_attached",
+                    "attachment_id": attachment_id,
+                }
 
             count = db.scalar(select(func.count(FragmentAttachment.id)).where(*active)) or 0
             if count >= MAX_ATTACHMENTS_PER_FRAGMENT:
@@ -176,6 +281,7 @@ class AttachmentUploadService:
                 AttachmentInput(
                     asset_id=asset.id, caption=item.caption, sort_order=item.sort_order
                 ),
+                client_file_id=item.client_file_id if ask else None,
             )
             db.flush()
             self.memory._schedule_attachments_added(db, memory, fragment_id, user_id)
