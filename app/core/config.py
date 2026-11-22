@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     db_connect_timeout: int = Field(default=10, gt=0)
     db_echo: bool = False
 
+    # [新增] 企业权益可在联调环境单独启用，密钥和首位管理员由部署配置。
+    benefit_enabled: bool = False
+    benefit_crypto_keys: SecretStr = SecretStr("")
+    benefit_bootstrap_admin_user_ids: set[int] = Field(default_factory=set)
+
     # 开发默认使用本地 Mock 存储；部署时明确切换为 s3。
     object_storage_mode: Literal["mock", "s3"] = "mock"
     object_storage_mock_directory: str = ".local-media"

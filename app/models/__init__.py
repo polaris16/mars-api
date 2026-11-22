@@ -38,6 +38,22 @@ from app.models.t_memory_validation_job import MemoryValidationJob
 from app.models.t_memory_graph_event import MemoryGraphEvent
 from app.models.t_memory_graph_event_element import MemoryGraphEventElement
 
+# [新增] 企业采购、权益发放领取和履约记账模型。
+from app.models.t_enterprise import Enterprise
+from app.models.t_enterprise_member import EnterpriseMember
+from app.models.t_benefit_staff import BenefitStaff
+from app.models.t_benefit_service import BenefitService
+from app.models.t_benefit_service_version import BenefitServiceVersion
+from app.models.t_benefit_package import BenefitPackage
+from app.models.t_benefit_package_item import BenefitPackageItem
+from app.models.t_benefit_purchase_batch import BenefitPurchaseBatch
+from app.models.t_benefit_batch_contact import BenefitBatchContact
+from app.models.t_benefit_issue_request import BenefitIssueRequest
+from app.models.t_benefit_grant import BenefitGrant
+from app.models.t_benefit_balance import BenefitBalance
+from app.models.t_benefit_service_order import BenefitServiceOrder
+from app.models.t_benefit_order_event import BenefitOrderEvent
+
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
 # 将录音与媒体模型注册到公开导出列表。
@@ -77,4 +93,19 @@ __all__ = [
     # [新增] 图谱事件节点和成员证据。
     "MemoryGraphEvent",
     "MemoryGraphEventElement",
+    # [新增] 企业组织和权益领域模型。
+    "Enterprise",
+    "EnterpriseMember",
+    "BenefitStaff",
+    "BenefitService",
+    "BenefitServiceVersion",
+    "BenefitPackage",
+    "BenefitPackageItem",
+    "BenefitPurchaseBatch",
+    "BenefitBatchContact",
+    "BenefitIssueRequest",
+    "BenefitGrant",
+    "BenefitBalance",
+    "BenefitServiceOrder",
+    "BenefitOrderEvent",
 ]

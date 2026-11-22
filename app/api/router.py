@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from app.api.endpoints.auth import router as auth_router
+from app.api.endpoints.benefits import router as benefits_router  # [新增] 企业权益
 from app.api.endpoints.contacts import router as contacts_router  # [新增] App 联系人入口
 from app.api.endpoints.health import router as health_router
 from app.api.endpoints.interests import router as interests_router
@@ -20,6 +21,7 @@ from app.api.endpoints.memory_session_members import router as memory_session_me
 
 api_router = APIRouter()
 api_router.include_router(auth_router)  # 注册认证接口。
+api_router.include_router(benefits_router)
 api_router.include_router(health_router)
 api_router.include_router(interests_router)
 api_router.include_router(topics_router)    # 首页推荐话题路由。
