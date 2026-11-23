@@ -6,11 +6,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, PaginateOnly
 from app.db.database import get_db
+from app.schemas.list_sort import NameSort
 from app.schemas.memory_graph import (
-    EntityType, GraphEntityPage, GraphEvidencePage, GraphNeighborhood, GraphNodeResponse,
-    NodeId, Relation, TimelinePage,
+    EntityType,
+    GraphEntityPage,
+    GraphEvidencePage,
+    GraphNeighborhood,
+    GraphNodeResponse,
+    GraphEvidenceSort,
+    NodeId,
+    Relation,
+    TimelinePage,
+    TimelineSort,
 )
 from app.services.memory_graph_service import MemoryGraphService
 
@@ -24,24 +33,50 @@ PageSize = Annotated[int, Query(ge=1, le=100)]
 
 @router.get("/timeline", response_model=TimelinePage, summary="查看回忆录时间线")
 def list_memory_graph_timeline(
-    user: CurrentUser, db: Db, service: Graph, session_id: SessionId | None = None,
-    page: Page = 1, page_size: PageSize = 20, from_date: date | None = None,
-    to_date: date | None = None, entity_node_id: NodeId | None = None,
+    user: CurrentUser,
+    db: Db,
+    service: Graph,
+    session_id: SessionId | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    entity_node_id: NodeId | None = None,
     include_undated: bool | None = None,
+    paginate: PaginateOnly = True,
+    sort: TimelineSort = "default",
 ):
     return service.timeline(
-        db, user, session_id, page, page_size, from_date=from_date, to_date=to_date,
-        entity_node_id=entity_node_id, include_undated=include_undated,
+        db,
+        user,
+        session_id,
+        page,
+        page_size,
+        from_date=from_date,
+        to_date=to_date,
+        entity_node_id=entity_node_id,
+        include_undated=include_undated,
+        sort=sort,
     )
 
 
 @router.get("/entities", response_model=GraphEntityPage, summary="查看图谱实体目录")
 def list_memory_graph_entities(
-    user: CurrentUser, db: Db, service: Graph, session_id: SessionId | None = None,
-    page: Page = 1, page_size: PageSize = 20, entity_type: EntityType | None = None,
+    user: CurrentUser,
+    db: Db,
+    service: Graph,
+    session_id: SessionId | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    entity_type: EntityType | None = None,
     keyword: Annotated[str | None, Query(max_length=100)] = None,
+    paginate: PaginateOnly = True,
+    sort: NameSort = "default",
 ):
-    return service.entities(db, user, session_id, page, page_size, entity_type=entity_type, keyword=keyword)
+    # [删除-旧] return service.entities(db, user, session_id, page, page_size, entity_type=entity_type, keyword=keyword)
+    return service.entities(
+        db, user, session_id, page, page_size, entity_type=entity_type, keyword=keyword, sort=sort
+    )
 
 
 @router.get("/nodes/{node_id}", response_model=GraphNodeResponse, summary="查看图谱节点详情")
@@ -61,12 +96,28 @@ def get_memory_graph_neighborhood(
 
 @router.get("/evidence", response_model=GraphEvidencePage, summary="查看图谱节点或关系的证据")
 def list_memory_graph_evidence(
-    user: CurrentUser, db: Db, service: Graph, session_id: SessionId | None = None,
-    page: Page = 1, page_size: PageSize = 20, node_id: NodeId | None = None,
-    from_node_id: NodeId | None = None, to_node_id: NodeId | None = None,
+    user: CurrentUser,
+    db: Db,
+    service: Graph,
+    session_id: SessionId | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    node_id: NodeId | None = None,
+    from_node_id: NodeId | None = None,
+    to_node_id: NodeId | None = None,
     relation_type: Relation | None = None,
+    paginate: PaginateOnly = True,
+    sort: GraphEvidenceSort = "default",
 ):
     return service.evidence(
-        db, user, session_id, page, page_size, node_id=node_id, from_node_id=from_node_id,
-        to_node_id=to_node_id, relation_type=relation_type,
+        db,
+        user,
+        session_id,
+        page,
+        page_size,
+        node_id=node_id,
+        from_node_id=from_node_id,
+        to_node_id=to_node_id,
+        relation_type=relation_type,
+        sort=sort,
     )

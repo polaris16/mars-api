@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.core.config import get_settings
 from app.db.database import get_db
 from app.main import app
-from app.models import Base, BenefitBalance, BenefitGrant, BenefitServiceOrder
+from app.models import Base, BenefitBalance, BenefitGrant, BenefitPurchaseBatch, BenefitServiceOrder
 from app.services import benefit_orders
 from app.workers import benefits as benefit_worker
 from test_user_relationships import client, login
@@ -184,6 +184,111 @@ def configure(benefits, units=2, *, different_description=False):
     return client, platform, customer, provider, org["id"], draft["id"], version["id"], now
 
 
+# [新增] 运营目录全量读取保留版本归属、发布状态与子项顺序。
+def test_benefit_catalog_lists_sort_before_paging_and_allow_full_results(benefits):
+    client, root = benefits
+    platform = login(client, "13800000001")
+    customer = login(client, "13800000002")
+    services_path = f"{OPS}/benefit-services"
+    packages_path = f"{OPS}/benefit-packages"
+    empty = {"items": [], "page": 1, "page_size": 0, "total": 0}
+    for path in (services_path, packages_path):
+        assert send(client, "GET", f"{path}?paginate=false", platform) == empty
+
+    zebra = send(client, "POST", services_path, platform, {"code": "zebra"}, 201)
+    apple = send(client, "POST", services_path, platform, {"code": "apple"}, 201)
+    versions_path = f"{services_path}/{zebra['id']}/versions"
+    assert send(client, "GET", f"{versions_path}?paginate=false", platform) == empty
+    body = {
+        "name": "陪聊",
+        "summary": "线下陪伴",
+        "description_ref": doc(root, "一对一陪伴"),
+        "terms_ref": doc(root, "完成后扣次"),
+        "delivery_terms": "一次陪伴完成即交付",
+        "fulfillment_mode": "appointment",
+    }
+    v1 = send(client, "POST", versions_path, platform, body, 201)
+    v2 = send(client, "POST", versions_path, platform, body, 201)
+    v3 = send(client, "POST", versions_path, platform, body, 201)
+    for item in (v1, v2):
+        send(client, "POST", f"{versions_path}/{item['id']}/publish", platform)
+    apple_versions = f"{services_path}/{apple['id']}/versions"
+    send(client, "POST", apple_versions, platform, body, 201)
+
+    packages = [
+        send(
+            client,
+            "POST",
+            packages_path,
+            platform,
+            {
+                "package_code": code,
+                "title": title,
+                "items": [
+                    {"service_version_id": v1["id"], "quota_per_unit": 2, "sort_order": 9},
+                    {"service_version_id": v2["id"], "quota_per_unit": 1, "sort_order": 1},
+                ],
+            },
+            201,
+        )
+        for code, title in (("z", "Zebra"), ("a", "apple"), ("a2", "Apple"))
+    ]
+    first, second, third = (item["id"] for item in packages)
+
+    for path, default_ids, ascending_sort, ascending_ids in (
+        (services_path, [zebra["id"], apple["id"]], "code_asc", [apple["id"], zebra["id"]]),
+        (
+            versions_path,
+            [v3["id"], v2["id"], v1["id"]],
+            "version_asc",
+            [v1["id"], v2["id"], v3["id"]],
+        ),
+        (packages_path, [third, second, first], "title_asc", [third, second, first]),
+    ):
+        default = send(client, "GET", path, platform)
+        assert (default["page"], default["page_size"], default["total"]) == (
+            1,
+            20,
+            len(default_ids),
+        )
+        assert [item["id"] for item in default["items"]] == default_ids
+        sorted_page = send(
+            client, "GET", f"{path}?sort={ascending_sort}&page=2&page_size=1", platform
+        )
+        assert [item["id"] for item in sorted_page["items"]] == ascending_ids[1:2]
+        full = send(
+            client,
+            "GET",
+            f"{path}?sort={ascending_sort}&paginate=false&page=9&page_size=1",
+            platform,
+        )
+        assert [item["id"] for item in full["items"]] == ascending_ids
+        assert (full["page"], full["page_size"], full["total"]) == (
+            1,
+            len(ascending_ids),
+            len(ascending_ids),
+        )
+        send(client, "GET", f"{path}?paginate=false", customer, expected=403)
+        send(client, "GET", f"{path}?sort=unknown", platform, expected=422)
+
+    for path, sort, ordered_ids in (
+        (services_path, "code_desc", [zebra["id"], apple["id"]]),
+        (versions_path, "version_desc", [v3["id"], v2["id"], v1["id"]]),
+        (packages_path, "title_desc", [first, third, second]),
+    ):
+        result = send(client, "GET", f"{path}?sort={sort}&paginate=false", platform)
+        assert [item["id"] for item in result["items"]] == ordered_ids
+        if path == services_path:
+            assert result["items"][0]["latest_version"]["id"] == v2["id"]
+            assert result["items"][1]["latest_version"] is None
+        if path == packages_path:
+            for package in result["items"]:
+                assert [item["service_version_id"] for item in package["items"]] == [
+                    v2["id"],
+                    v1["id"],
+                ]
+
+
 def test_benefit_purchase_issuance_claim_merge_and_scope(benefits):
     client, platform, customer, provider, enterprise, batch, version, _ = configure(benefits)
     path = f"/api/enterprises/{enterprise}/benefit-purchases/{batch}"
@@ -227,6 +332,15 @@ def test_benefit_purchase_issuance_claim_merge_and_scope(benefits):
     assert blocked["code"] == "idempotency_conflict"
     first, second = data["items"]
     assert len(send(client, "GET", f"{USER}/benefit-invitations", customer)["items"]) == 2
+    # [新增] 批次发放记录按领取期限切页，仍需有本企业权限。
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        earliest = db.get(BenefitGrant, first["grant_id"])
+        earliest.claim_expires_at -= timedelta(hours=1)
+    sorted_grants = f"{path}/grants?status=issued&sort=expires_at_asc&page_size=1"
+    page = send(client, "GET", sorted_grants, platform)
+    assert page["total"] == 2 and page["items"][0]["grant_id"] == first["grant_id"]
+    send(client, "GET", sorted_grants, customer, expected=404)
+    send(client, "GET", f"{path}/grants?paginate=false", platform, expected=422)
     assert send(client, "GET", f"{USER}/benefit-invitations", provider)["items"] == []
     assert (
         send(client, "GET", f"{USER}/benefit-service-versions/{version}/documents/terms", customer)[
@@ -267,6 +381,173 @@ def test_benefit_purchase_issuance_claim_merge_and_scope(benefits):
     with contextmanager(app.dependency_overrides[get_db])() as db:
         saved = db.get(BenefitGrant, first["grant_id"])
         assert saved.delivery_ciphertext is None and saved.recipient_user_id == 2
+
+
+# [新增] 经营和用户列表在原有可见范围内使用排序及全量选项。
+def test_benefit_business_lists_sort_and_apply_full_mode_by_endpoint(benefits):
+    client, platform, customer, provider, org, batch, version, now = configure(benefits, 1)
+    team = f"/api/enterprises/{org}"
+    extra = send(
+        client,
+        "POST",
+        f"{OPS}/enterprises",
+        platform,
+        {
+            "code": "alternate",
+            "display_name": "Alpha",
+            "admin_user_id": 1,
+        },
+        201,
+    )["id"]
+    send(
+        client,
+        "POST",
+        f"{team}/members",
+        platform,
+        {
+            "user_id": 3,
+            "role": "issuer",
+            "work_display_name": "My Name",
+        },
+        201,
+    )
+    package = send(
+        client,
+        "POST",
+        f"{OPS}/benefit-packages",
+        platform,
+        {
+            "package_code": "alternate",
+            "title": "Alpha Plan",
+            "items": [{"service_version_id": version, "quota_per_unit": 1}],
+        },
+        201,
+    )["id"]
+    send(client, "POST", f"{OPS}/benefit-packages/{package}/publish", platform)
+    alternate_batch = send(
+        client,
+        "POST",
+        f"{OPS}/benefit-purchases",
+        platform,
+        {
+            "enterprise_id": extra,
+            "package_id": package,
+            "purchase_reference": "SALE-02",
+            "purchased_units": 1,
+            "paid_amount_minor": 2500,
+            "issue_until": (now + timedelta(days=4)).isoformat(),
+            "claim_until": (now + timedelta(days=5)).isoformat(),
+            "service_valid_from": (now - timedelta(days=1)).isoformat(),
+            "service_valid_until": (now + timedelta(days=30)).isoformat(),
+        },
+        201,
+    )["id"]
+    send(
+        client,
+        "POST",
+        f"{OPS}/benefit-purchases/{alternate_batch}/activate",
+        platform,
+        {"paid_at": now.isoformat()},
+    )
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        db.get(BenefitPurchaseBatch, batch).created_at = now - timedelta(days=1)
+        db.get(BenefitPurchaseBatch, alternate_batch).created_at = now
+
+    opts = {"items": [{"recipient_phone": "13800000002"}]}
+    grant_ids = [
+        send(
+            client,
+            "POST",
+            f"/api/enterprises/{enterprise}/benefit-purchases/{purchase}/issues",
+            platform,
+            opts,
+            201,
+            uuid4(),
+        )["items"][0]["grant_id"]
+        for enterprise, purchase in ((org, batch), (extra, alternate_batch))
+    ]
+    invitations = f"{USER}/benefit-invitations"
+    for path, sort, token in (
+        (f"{OPS}/enterprises", "name_asc", platform),
+        (f"{OPS}/benefit-staff", "role_desc", platform),
+        (f"{OPS}/benefit-purchases", "created_at_asc", platform),
+        (f"{team}/members", "name_asc", platform),
+        (f"{team}/benefit-purchases", "created_at_asc", provider),
+        (invitations, "expires_at_asc", customer),
+        (f"{USER}/benefit-plans", "title_asc", customer),
+    ):
+        result = client.get(f"{path}?paginate=false", headers=token)
+        assert result.status_code == 422, result.text
+        assert result.json()["detail"][0]["loc"] == ["query", "paginate"]
+        send(client, "GET", f"{path}?sort={sort}&page_size=1", token)
+        send(client, "GET", f"{path}?sort=unknown", token, expected=422)
+
+    assert (
+        send(client, "GET", f"{OPS}/enterprises?sort=name_asc&page_size=1", platform)["items"][0][
+            "id"
+        ]
+        == extra
+    )
+    assert (
+        send(client, "GET", f"{OPS}/benefit-staff?sort=role_desc&page_size=1", platform)["items"][
+            0
+        ]["role"]
+        == "provider"
+    )
+    assert (
+        send(client, "GET", f"{team}/members?sort=name_asc&page_size=1", platform)["items"][0][
+            "user_id"
+        ]
+        == 3
+    )
+    assert (
+        send(client, "GET", f"{OPS}/benefit-purchases?sort=created_at_asc&page_size=1", platform)[
+            "items"
+        ][0]["id"]
+        == batch
+    )
+    assert (
+        send(client, "GET", f"{team}/benefit-purchases?sort=created_at_desc", provider)["items"][0][
+            "id"
+        ]
+        == batch
+    )
+    send(
+        client,
+        "GET",
+        f"/api/enterprises/{extra}/benefit-purchases?sort=created_at_desc",
+        provider,
+        expected=404,
+    )
+    assert (
+        send(client, "GET", f"{invitations}?sort=expires_at_desc&page_size=1", customer)["items"][
+            0
+        ]["grant_id"]
+        == grant_ids[0]
+    )
+    for grant_id in grant_ids:
+        send(client, "POST", f"{USER}/benefit-claims", customer, {"grant_id": grant_id}, 201)
+    sorted_plans = send(client, "GET", f"{USER}/benefit-plans?sort=title_asc&page_size=1", customer)
+    assert sorted_plans["total"] == 2
+    assert sorted_plans["items"][0]["package_id"] == package
+    filtered = send(
+        client, "GET", f"{USER}/benefit-plans?sort=title_desc&enterprise_id={org}", customer
+    )
+    assert [plan["enterprise"]["id"] for plan in filtered["items"]] == [org]
+
+    for path, token, empty_token in (
+        (f"{USER}/enterprises", platform, customer),
+        (f"{USER}/benefit-enterprises", customer, provider),
+    ):
+        full = send(client, "GET", f"{path}?sort=name_asc&paginate=false&page=3&page_size=1", token)
+        assert (full["page"], full["page_size"], full["total"]) == (1, 2, 2)
+        assert [row["id"] for row in full["items"]] == [extra, org]
+        assert send(client, "GET", f"{path}?paginate=false", empty_token) == {
+            "items": [],
+            "page": 1,
+            "page_size": 0,
+            "total": 0,
+        }
 
 
 def test_benefit_booking_reschedule_complete_and_failed_reservation(benefits, monkeypatch):
@@ -310,6 +591,14 @@ def test_benefit_booking_reschedule_complete_and_failed_reservation(benefits, mo
     key = uuid4()
     reserved = send(client, "POST", f"{prefix}/actions", platform, assignment, key=key)
     assert reserved["event"]["reserved_delta"] == 1 and reserved["order"]["remaining_count"] == 0
+    # [新增] 已预约服务优先于缺少预约时间的服务，履约人员仍只看本人的分配。
+    user_orders = f"{USER}/benefit-service-orders"
+    for path, token in ((user_orders, customer), (FULFILL, platform)):
+        page = send(client, "GET", f"{path}?sort=scheduled_start_at_desc&page_size=1", token)
+        assert page["total"] == 2 and page["items"][0]["id"] == first["id"]
+        send(client, "GET", f"{path}?paginate=false", token, expected=422)
+    assigned = send(client, "GET", f"{FULFILL}?sort=created_at_asc&status=reserved", provider)
+    assert [order["id"] for order in assigned["items"]] == [first["id"]]
     assert (
         send(client, "POST", f"{prefix}/actions", platform, assignment, key=key)["event"]
         == reserved["event"]

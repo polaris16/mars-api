@@ -1,5 +1,6 @@
 """[新增] 通过 HTTP 验证联系人申请、资料可见性和记忆授权。"""
 
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +23,81 @@ from test_user_relationships import RELATIONSHIPS, client, confirm_relationship,
 CONTACTS = "/api/users/me/contacts"
 CONTACT_SEARCH = f"{CONTACTS}/search"
 CONTACT_REQUESTS = f"{CONTACTS}/requests"
+
+
+# [新增] 两种列表均支持与分页结果一致的全局排序，并可一次返回超过 100 项。
+def test_friend_and_relationship_lists_support_sorted_full_results(client):
+    alice = login(client, "13800000001")
+    outsider = login(client, "13800000003")
+    names = {user_id: f"contact {user_id}" for user_id in range(100, 201)}
+    names.update({100: "Zebra", 101: "  apple  ", 102: "Banana", 103: " ", 104: None})
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        for user_id, name in names.items():
+            db.add(
+                User(
+                    id=user_id, username=f"user{user_id}", phone=f"139{user_id}", display_name=name
+                )
+            )
+            pair_id = uuid.uuid4()
+            for subject, related in ((1, user_id), (user_id, 1)):
+                db.add(
+                    UserRelationship(
+                        relationship_pair_id=pair_id,
+                        subject_user_id=subject,
+                        related_user_id=related,
+                        relationship_type="contact",
+                        relation_code="contact_of",
+                        status="active",
+                        authorization_method="in_app",
+                        initiated_by_user_id=1,
+                    )
+                )
+
+    for path in (CONTACTS, RELATIONSHIPS):
+        assert (
+            client.get(path, headers=alice).json()
+            == client.get(
+                path, headers=alice, params={"sort": "default", "paginate": "true"}
+            ).json()
+        )
+        for sort, first_ids in (("name_asc", [101, 102]), ("name_desc", [100, 200])):
+            response = client.get(
+                path,
+                headers=alice,
+                params={"paginate": "false", "sort": sort, "page": 9, "page_size": 1},
+            )
+            assert response.status_code == 200, response.text
+            result = response.json()
+            assert (result["page"], result["page_size"], result["total"]) == (1, 101, 101)
+            ids = [item["related_user_id"] for item in result["items"]]
+            assert ids[:2] == first_ids
+            assert set(ids[-2:]) == {103, 104}
+            assert set(ids) == set(names)
+
+            response = client.get(
+                path, headers=alice, params={"sort": sort, "page": 2, "page_size": 1}
+            )
+            result = response.json()
+            assert (result["page"], result["page_size"], result["total"]) == (2, 1, 101)
+            assert [item["related_user_id"] for item in result["items"]] == first_ids[1:]
+
+        assert client.get(path, headers=outsider, params={"paginate": "false"}).json() == {
+            "items": [],
+            "page": 1,
+            "page_size": 0,
+            "total": 0,
+        }
+        assert client.get(path, headers=alice, params={"sort": "unsupported"}).status_code == 422
+
+    filtered = client.get(
+        CONTACTS, headers=alice, params={"paginate": "false", "keyword": "apple"}
+    ).json()
+    assert [item["related_user_id"] for item in filtered["items"]] == [101]
+    assert filtered["total"] == filtered["page_size"] == 1
+    for view in ("incoming", "outgoing"):
+        for params in ({"paginate": "false"}, {"sort": "name_asc"}):
+            response = client.get(CONTACTS, headers=alice, params={"view": view, **params})
+            assert response.status_code == 422, response.text
 
 
 # [新增] 输入变化时可按精确手机号或部分昵称重新查询同一入口。
@@ -50,6 +126,16 @@ def test_candidate_search_filters_relationships_and_returns_only_profiles(client
     first = search("bo", page_size=1)
     assert first["total"] == 2 and first["items"][0]["id"] == 2
     assert search("BO", page=2, page_size=1)["items"][0]["id"] == 3
+    # [新增] 倒序先于分页，候选搜索继续限制全量查询。
+    assert search("BO", sort="name_desc", page_size=1)["items"][0]["id"] == 3
+    assert search("BO", sort="name_desc", page=2, page_size=1)["items"][0]["id"] == 2
+    for options in ({"paginate": False}, {"sort": "unknown"}):
+        assert (
+            client.post(
+                CONTACT_SEARCH, headers=alice, json={"keyword": "Bo", **options}
+            ).status_code
+            == 422
+        )
     assert search("BOW")["items"][0]["id"] == 3
     assert (
         client.post(
@@ -125,10 +211,24 @@ def test_new_contact_requests_show_messages_and_rejections_in_history(client):
         CONTACT_REQUESTS, headers=carol, json={"related_user_id": 2, "message": "我是 Carol"}
     )
     assert another.status_code == 201, another.text
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        first = db.get(UserRelationship, request_id)
+        first.created_at = first.created_at - timedelta(days=1)
 
     common = {"direction": "incoming", "page_size": 1}
     page = client.get(CONTACT_REQUESTS, headers=bob, params=common).json()
     assert page["total"] == 2 and page["items"][0]["request_id"] == another.json()["id"]
+    # [新增] 申请按时间升序后切页，不能关闭分页。
+    ascending = client.get(
+        CONTACT_REQUESTS, headers=bob, params={**common, "sort": "created_at_asc"}
+    ).json()
+    assert ascending["items"][0]["request_id"] == request_id
+    assert (
+        client.get(
+            CONTACT_REQUESTS, headers=bob, params={**common, "paginate": "false"}
+        ).status_code
+        == 422
+    )
     item = client.get(CONTACT_REQUESTS, headers=bob, params={**common, "page": 2}).json()["items"][
         0
     ]

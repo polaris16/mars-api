@@ -255,8 +255,16 @@ def test_versioned_memory_processing_edit_and_entity_resolution(extraction_api):
     candidates = f"{SESSION}/entity-candidates"
     (candidate,) = client.get(candidates, headers=OWNER).json()["items"]
     assert candidate["mention_text"] == "陈师傅"
+    # [新增] 检查候选排序仍只返回当前元素的待确认项。
+    sorted_candidates = client.get(
+        candidates, headers=OWNER, params={"sort": "id_desc", "element_id": item["id"]}
+    )
+    assert sorted_candidates.status_code == 200
+    assert sorted_candidates.json()["items"] == [candidate]
     payload = {
-        "expected_revision": candidate["revision"], "action": "create_new", "canonical_name": "陈师傅",
+        "expected_revision": candidate["revision"],
+        "action": "create_new",
+        "canonical_name": "陈师傅",
     }
     resolve = f"{candidates}/{candidate['id']}/resolutions"
     decision = client.post(resolve, headers=OWNER, json=payload)
@@ -290,6 +298,24 @@ def test_versioned_memory_processing_edit_and_entity_resolution(extraction_api):
     assert new_items[0]["entities"][0]["id"] == entity_id
     assert new_items[1]["summary"] == "后来去了北京。"
     assert client.get(f"{root}/draft-versions", headers=OWNER).json()["total"] == 2
+    # [新增] 元素与整理稿先排序再切页，当前稿版本标识继续返回。
+    reversed_elements = client.get(
+        ELEMENTS, headers=OWNER, params={"sort": "id_desc", "page_size": 1}
+    )
+    assert reversed_elements.json()["items"] == new_items[-1:]
+    drafts = f"{root}/draft-versions"
+    sorted_drafts = client.get(drafts, headers=OWNER, params={"sort": "id_asc", "page_size": 1})
+    assert sorted_drafts.status_code == 200
+    assert sorted_drafts.json()["items"][0]["id"] == draft_id
+    assert sorted_drafts.json()["active_version_id"] == revised.json()["id"]
+    entities = f"{SESSION}/memory-entities"
+    sorted_entities = client.get(
+        entities, headers=OWNER, params={"sort": "name_desc", "page_size": 1}
+    )
+    assert sorted_entities.status_code == 200
+    assert sorted_entities.json()["items"][0]["id"] == entity_id
+    for path in (candidates, ELEMENTS, drafts, entities):
+        assert client.get(path, headers=OWNER, params={"paginate": "false"}).status_code == 422
 
 
 def test_versioned_org_failed_job_can_retry_then_extraction_can_fallback(extraction_api, monkeypatch):
@@ -662,11 +688,28 @@ def test_review_cross_session_answer_replay_and_ownership(extraction_api, monkey
         assert len(question["evidence"]) == 3
         assert {item["session_id"] for item in question["evidence"]} == {11, 12}
     assert client.get(REVIEW_QUESTIONS, headers=VIEWER).json()["total"] == 0
+    # [新增] 排序仍按会话证据筛选问题，全量请求返回 422。
+    sorted_page = client.get(
+        REVIEW_QUESTIONS,
+        headers=OWNER,
+        params={"session_id": 12, "sort": "id_asc", "page_size": 1},
+    )
+    assert sorted_page.status_code == 200 and sorted_page.json()["items"] == [question]
+    assert (
+        client.get(REVIEW_QUESTIONS, headers=OWNER, params={"paginate": "false"}).status_code == 422
+    )
     assert client.get(REVIEW_QUESTIONS).status_code == 401
     endpoint = f"{REVIEW_QUESTIONS}/{question['id']}/answers"
-    body = {"expected_revision": question["revision"], "action": "confirm", "selected_option_id": question["options"][0]["id"]}
+    body = {
+        "expected_revision": question["revision"],
+        "action": "confirm",
+        "selected_option_id": question["options"][0]["id"],
+    }
     assert client.post(endpoint, headers=VIEWER, json=body).status_code == 404
-    assert client.post(endpoint, headers=OWNER, json={**body, "expected_revision": 99}).status_code == 409
+    assert (
+        client.post(endpoint, headers=OWNER, json={**body, "expected_revision": 99}).status_code
+        == 409
+    )
     saved = client.post(endpoint, headers=OWNER, json=body)
     assert saved.status_code == 202, saved.text
     assert client.post(endpoint, headers=OWNER, json=body).json() == saved.json()
@@ -1425,6 +1468,14 @@ def test_retry_budget_fallback_and_manual_replacement(extraction_api, monkeypatc
     assert client.get(f"{ELEMENTS}/{fallback_id}", headers=OWNER).status_code == 404
     old_job = client.get(job_url, headers=OWNER).json()
     assert old_job["status"] == "failed" and old_job["fallback_element_id"] is None
+    # [新增] 重跑前后的任务使用不同时间，验证排序取到更早任务。
+    with factory() as db, db.begin():
+        current_job = db.get(AIProcessingJob, result.json()["id"])
+        db.get(AIProcessingJob, job["id"]).created_at = current_job.created_at - timedelta(days=1)
+    sorted_jobs = client.get(jobs, headers=OWNER, params={"sort": "created_at_asc", "page_size": 1})
+    assert sorted_jobs.status_code == 200
+    assert sorted_jobs.json()["items"][0]["id"] == job["id"]
+    assert client.get(jobs, headers=OWNER, params={"paginate": "false"}).status_code == 422
     with factory() as db:
         assert (
             db.get(AIProcessingJob, result.json()["id"]).input_payload["mock_scenario"] == "success"

@@ -5,8 +5,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, PaginateOnly
 from app.db.database import get_db
+from app.schemas.list_sort import CreatedAtSort, IdSort
 from app.schemas.memory_extraction import (
     ElementOrigin,
     ElementType,
@@ -71,8 +72,11 @@ def list_extraction_jobs(
     service: ExtractionService,
     page: Page = 1,
     page_size: PageSize = 20,
+    paginate: PaginateOnly = True,
+    sort: CreatedAtSort = "default",
 ) -> ExtractionJobPage:
-    return service.list_jobs(db, user, session_id, fragment_id, page, page_size)
+    # [删除-旧] return service.list_jobs(db, user, session_id, fragment_id, page, page_size)
+    return service.list_jobs(db, user, session_id, fragment_id, page, page_size, sort=sort)
 
 
 @router.get(
@@ -102,6 +106,8 @@ def list_memory_elements(
     review_status: ReviewStatus | None = None,
     origin: ElementOrigin | None = None,
     verification_status: VerificationStatus | None = None,
+    paginate: PaginateOnly = True,
+    sort: IdSort = "default",
 ) -> MemoryElementPage:
     return service.list_elements(
         db,
@@ -115,6 +121,7 @@ def list_memory_elements(
         review_status=review_status,
         origin=origin,
         verification_status=verification_status,
+        sort=sort,
     )
 
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+from collections import defaultdict
 
 from sqlalchemy import func, select
 
@@ -19,6 +20,14 @@ from app.models import (
     EnterpriseMember,
     User,
 )
+from app.schemas.benefits import (
+    BenefitNameSort,
+    BenefitPackageSort,
+    BenefitPurchaseSort,
+    BenefitServiceSort,
+    BenefitStaffSort,
+    BenefitVersionSort,
+)
 from app.services.benefit_common import (
     BenefitError,
     active_row,
@@ -28,7 +37,9 @@ from app.services.benefit_common import (
     missing,
     new_row,
     now_utc,
+    page_data,
     paginate,
+    select_page,
     stamp,
     utc,
 )
@@ -136,9 +147,26 @@ def scoped_purchase(db, batch_id: int, enterprise_id: int, *, lock: bool = False
 
 
 class BenefitCatalogService:
-    def enterprises(self, ctx, page, size, *, own=False):
+    def enterprises(
+        self,
+        ctx,
+        page,
+        size,
+        *,
+        own=False,
+        sort: BenefitNameSort = "default",
+        paginate_results: bool = True,
+    ):
         with ctx.db.begin():
-            stmt = select(Enterprise).where(Enterprise.is_del.is_(False)).order_by(Enterprise.id)
+            # [删除-旧] stmt = select(Enterprise).where(Enterprise.is_del.is_(False)).order_by(Enterprise.id)
+            # [新增] 只对调用者可见的企业排序，按 ID 稳定处理同名企业。
+            name = func.lower(Enterprise.display_name)
+            order = {
+                "default": (Enterprise.id,),
+                "name_asc": (name.asc(), Enterprise.id),
+                "name_desc": (name.desc(), Enterprise.id),
+            }[sort]
+            stmt = select(Enterprise).where(Enterprise.is_del.is_(False)).order_by(*order)
             render = lambda row: display(row, ENTERPRISE_FIELDS)
             if own:
                 roles = dict(
@@ -156,7 +184,8 @@ class BenefitCatalogService:
                     return {**display(row, ENTERPRISE_FIELDS), "role": roles[row.id]}
             else:
                 ctx.require_platform("admin", "ops")
-            return paginate(ctx.db, stmt, page, size, render)
+            # [删除-旧] return paginate(ctx.db, stmt, page, size, render)
+            return paginate(ctx.db, stmt, page, size, render, paginate_results=paginate_results)
 
     def write_enterprise(self, ctx, body, enterprise_id=None):
         with ctx.db.begin():
@@ -186,16 +215,23 @@ class BenefitCatalogService:
                 stamp(row, ctx.actor_id)
             return display(row, ENTERPRISE_FIELDS)
 
-    def members(self, ctx, enterprise_id, page, size):
+    def members(self, ctx, enterprise_id, page, size, *, sort: BenefitNameSort = "default"):
         with ctx.db.begin():
             ctx.enterprise(enterprise_id, "admin")
+            name = func.lower(func.nullif(func.trim(EnterpriseMember.work_display_name), ""))
+            order = {
+                "default": (EnterpriseMember.id,),
+                "name_asc": (name.asc().nulls_last(), EnterpriseMember.id),
+                "name_desc": (name.desc().nulls_last(), EnterpriseMember.id),
+            }[sort]
             stmt = (
                 select(EnterpriseMember)
                 .where(
                     EnterpriseMember.enterprise_id == enterprise_id,
                     EnterpriseMember.is_del.is_(False),
                 )
-                .order_by(EnterpriseMember.id)
+                # [删除-旧] .order_by(EnterpriseMember.id)
+                .order_by(*order)
             )
             return paginate(ctx.db, stmt, page, size, lambda row: display(row, MEMBER_FIELDS))
 
@@ -252,11 +288,18 @@ class BenefitCatalogService:
             flush_unique(ctx.db)
             return display(row, MEMBER_FIELDS)
 
-    def staff(self, ctx, page, size):
+    def staff(self, ctx, page, size, *, sort: BenefitStaffSort = "default"):
         with ctx.db.begin():
             ctx.require_platform("admin")
+            # [新增] 显式岗位排序按岗位编码，同岗位按记录 ID。
+            order = {
+                "default": (BenefitStaff.id,),
+                "role_asc": (BenefitStaff.role.asc(), BenefitStaff.id),
+                "role_desc": (BenefitStaff.role.desc(), BenefitStaff.id),
+            }[sort]
             stmt = (
-                select(BenefitStaff).where(BenefitStaff.is_del.is_(False)).order_by(BenefitStaff.id)
+                # [删除-旧] select(BenefitStaff).where(BenefitStaff.is_del.is_(False)).order_by(BenefitStaff.id)
+                select(BenefitStaff).where(BenefitStaff.is_del.is_(False)).order_by(*order)
             )
             return paginate(
                 ctx.db, stmt, page, size, lambda row: display(row, "id user_id role status")
@@ -296,20 +339,73 @@ class BenefitCatalogService:
             .order_by(BenefitServiceVersion.version_no.desc())
             .limit(1)
         )
+        return BenefitCatalogService._service_data(row, latest)
+
+    # [新增] 写入响应和列表共用服务目录的展示字段。
+    @staticmethod
+    def _service_data(row, latest):
         return {
             **display(row, "id code status"),
             "latest_version": display(latest, VERSION_FIELDS) if latest else None,
         }
 
-    def services(self, ctx, page, size):
+    def services(
+        self,
+        ctx,
+        page,
+        size,
+        *,
+        paginate_results: bool = True,
+        sort: BenefitServiceSort = "default",
+    ):
         with ctx.db.begin():
             ctx.require_platform("admin", "ops")
-            stmt = (
-                select(BenefitService)
-                .where(BenefitService.is_del.is_(False))
-                .order_by(BenefitService.id)
+            # [删除-旧] stmt = (
+            #     select(BenefitService)
+            #     .where(BenefitService.is_del.is_(False))
+            #     .order_by(BenefitService.id)
+            # )
+            # return paginate(ctx.db, stmt, page, size, lambda row: self.service_view(ctx.db, row))
+            # [新增] 先排序切页，再一次查询当前结果中的最新已发布版本。
+            service = BenefitService
+            version = BenefitServiceVersion
+            order = {
+                "default": (service.id,),
+                "code_asc": (service.code.asc(), service.id),
+                "code_desc": (service.code.desc(), service.id),
+            }[sort]
+            visible = select(service).where(service.is_del.is_(False))
+            rows, page, size, total = select_page(
+                ctx.db, visible.order_by(*order), page, size, paginate_results=paginate_results
             )
-            return paginate(ctx.db, stmt, page, size, lambda row: self.service_view(ctx.db, row))
+            if not rows:
+                return page_data([], page, size, total)
+            latest_id = (
+                select(version.id)
+                .where(
+                    version.service_id == service.id,
+                    version.status == "published",
+                    version.is_del.is_(False),
+                )
+                .order_by(version.version_no.desc())
+                .limit(1)
+                .correlate(service)
+                .scalar_subquery()
+            )
+            service_ids = (
+                [row.id for row in rows]
+                if paginate_results
+                else visible.with_only_columns(service.id)
+            )
+            latest = ctx.db.scalars(
+                select(version)
+                .join(service, version.id == latest_id)
+                .where(service.id.in_(service_ids))
+            )
+            versions = {row.service_id: row for row in latest}
+            return page_data(
+                [self._service_data(row, versions.get(row.id)) for row in rows], page, size, total
+            )
 
     def write_service(self, ctx, body, service_id=None):
         with ctx.db.begin():
@@ -324,7 +420,16 @@ class BenefitCatalogService:
             flush_unique(ctx.db)
             return self.service_view(ctx.db, row)
 
-    def versions(self, ctx, service_id, page, size):
+    def versions(
+        self,
+        ctx,
+        service_id,
+        page,
+        size,
+        *,
+        paginate_results: bool = True,
+        sort: BenefitVersionSort = "default",
+    ):
         with ctx.db.begin():
             ctx.require_platform("admin", "ops")
             active_row(ctx.db, BenefitService, service_id)
@@ -334,9 +439,25 @@ class BenefitCatalogService:
                     BenefitServiceVersion.service_id == service_id,
                     BenefitServiceVersion.is_del.is_(False),
                 )
-                .order_by(BenefitServiceVersion.version_no.desc())
+                # [删除-旧] .order_by(BenefitServiceVersion.version_no.desc())
+                .order_by(
+                    (
+                        BenefitServiceVersion.version_no.asc()
+                        if sort == "version_asc"
+                        else BenefitServiceVersion.version_no.desc()
+                    ),
+                    BenefitServiceVersion.id,
+                )
             )
-            return paginate(ctx.db, stmt, page, size, lambda row: display(row, VERSION_FIELDS))
+            # [删除-旧] return paginate(ctx.db, stmt, page, size, lambda row: display(row, VERSION_FIELDS))
+            return paginate(
+                ctx.db,
+                stmt,
+                page,
+                size,
+                lambda row: display(row, VERSION_FIELDS),
+                paginate_results=paginate_results,
+            )
 
     @staticmethod
     def scoped_version(db, service_id, version_id, *, lock=False):
@@ -422,17 +543,58 @@ class BenefitCatalogService:
             "items": [display(item, ITEM_FIELDS) for item in self.package_items(db, row.id)],
         }
 
-    def packages(self, ctx, page, size, package_id=None):
+    def packages(
+        self,
+        ctx,
+        page,
+        size,
+        package_id=None,
+        *,
+        paginate_results: bool = True,
+        sort: BenefitPackageSort = "default",
+    ):
         with ctx.db.begin():
             ctx.require_platform("admin", "ops")
             if package_id is not None:
                 return self.package_view(ctx.db, active_row(ctx.db, BenefitPackage, package_id))
-            stmt = (
-                select(BenefitPackage)
-                .where(BenefitPackage.is_del.is_(False))
-                .order_by(BenefitPackage.id.desc())
+            # [删除-旧] stmt = (
+            #     select(BenefitPackage)
+            #     .where(BenefitPackage.is_del.is_(False))
+            #     .order_by(BenefitPackage.id.desc())
+            # )
+            # return paginate(ctx.db, stmt, page, size, lambda row: self.package_view(ctx.db, row))
+            # [新增] 全量结果也只批量查询一次权益包明细。
+            package = BenefitPackage
+            item = BenefitPackageItem
+            order = {
+                "default": (package.id.desc(),),
+                "title_asc": (func.lower(package.title).asc(), package.id.desc()),
+                "title_desc": (func.lower(package.title).desc(), package.id.desc()),
+            }[sort]
+            visible = select(package).where(package.is_del.is_(False))
+            rows, page, size, total = select_page(
+                ctx.db, visible.order_by(*order), page, size, paginate_results=paginate_results
             )
-            return paginate(ctx.db, stmt, page, size, lambda row: self.package_view(ctx.db, row))
+            if not rows:
+                return page_data([], page, size, total)
+            package_ids = (
+                [row.id for row in rows]
+                if paginate_results
+                else visible.with_only_columns(package.id)
+            )
+            items = defaultdict(list)
+            for row in ctx.db.scalars(
+                select(item)
+                .where(item.package_id.in_(package_ids), item.is_del.is_(False))
+                .order_by(item.package_id, item.sort_order, item.id)
+            ):
+                items[row.package_id].append(display(row, ITEM_FIELDS))
+            return page_data(
+                [{**display(row, PACKAGE_FIELDS), "items": items[row.id]} for row in rows],
+                page,
+                size,
+                total,
+            )
 
     def sellable_items(self, db, package_id, *, supported=False):
         items = self.package_items(db, package_id)
@@ -520,7 +682,17 @@ class BenefitCatalogService:
                 stamp(row, ctx.actor_id)
             return self.package_view(ctx.db, row)
 
-    def purchases(self, ctx, page, size, enterprise_id=None, batch_id=None, status=None):
+    def purchases(
+        self,
+        ctx,
+        page,
+        size,
+        enterprise_id=None,
+        batch_id=None,
+        status=None,
+        *,
+        sort: BenefitPurchaseSort = "default",
+    ):
         with ctx.db.begin():
             if enterprise_id is None:
                 ctx.require_platform("admin", "ops")
@@ -543,9 +715,17 @@ class BenefitCatalogService:
                 stmt = stmt.where(BenefitPurchaseBatch.enterprise_id == enterprise_id)
             if status:
                 stmt = stmt.where(BenefitPurchaseBatch.status == status)
+            # [新增] 保留默认 ID 倒序，显式排序以采购批次创建时间为准。
+            batch = BenefitPurchaseBatch
+            order = {
+                "default": (batch.id.desc(),),
+                "created_at_asc": (batch.created_at.asc(), batch.id.desc()),
+                "created_at_desc": (batch.created_at.desc(), batch.id.desc()),
+            }[sort]
             return paginate(
                 ctx.db,
-                stmt.order_by(BenefitPurchaseBatch.id.desc()),
+                # [删除-旧] stmt.order_by(BenefitPurchaseBatch.id.desc()),
+                stmt.order_by(*order),
                 page,
                 size,
                 lambda row: purchase_view(ctx.db, row, private=private),

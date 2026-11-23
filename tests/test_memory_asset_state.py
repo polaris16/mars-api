@@ -181,6 +181,68 @@ def test_topic_counts_only_first_saved_fragment_per_user_across_sessions(session
         assert [(item.id, item.participant_count) for item in page.items] == [(1, 7), (2, 6)]
 
 
+# [新增] 全量和显式排序继续使用同一套兴趣匹配规则。
+def test_topic_recommendation_sort_and_full_mode(sessions):
+    with sessions.begin() as db:
+        for topic_id, title, count in (
+            (1, "Zebra", 5),
+            (2, "apple", 1),
+            (3, "Bravo", 99),
+            (4, "Alpha", 4),
+            (5, "Disabled", 999),
+            (6, "Deleted", 999),
+            (7, "Unmatched", 999),
+        ):
+            topic = make_topic(topic_id, count)
+            topic.title = title
+            topic.is_general = topic_id not in {1, 7}
+            topic.is_enabled = topic_id != 5
+            topic.is_del = topic_id == 6
+            db.add(topic)
+        db.add_all(make_topic(topic_id) for topic_id in range(10, 27))
+        db.add(InterestDomain(id=1, code="life", name="生活"))
+        db.add(UserInterest(user_id=1, interest_id=1))
+        db.add_all(TopicInterest(topic_id=topic_id, interest_id=1) for topic_id in (1, 2, 5))
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    app = create_app()
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = lambda: User(id=1)
+    path = "/api/topics/recommended"
+    with TestClient(app) as client:
+        default = client.get(path).json()
+        assert (default["page"], default["page_size"], default["total"]) == (1, 6, 21)
+        assert [row["id"] for row in default["items"][:4]] == [1, 2, 3, 4]
+        assert client.get(path, params={"sort": "participant_count_desc"}).json() == default
+        assert client.get(path, params={"sort": "invalid"}).status_code == 422
+
+        full = client.get(
+            path, params={"sort": "title_asc", "paginate": "false", "page": 8, "page_size": 1}
+        ).json()
+        assert (full["page"], full["page_size"], full["total"]) == (1, 21, 21)
+        assert [row["id"] for row in full["items"]] == [2, 1, 4, 3, *range(10, 27)]
+        sources = [row["recommendation_source"] for row in full["items"]]
+        assert sources == ["interest", "interest", *["general"] * 19]
+        second = client.get(path, params={"sort": "title_asc", "page": 2, "page_size": 1}).json()
+        assert second["items"] == full["items"][1:2]
+        for sort, top_ids in (("title_desc", [1, 2]), ("participant_count_asc", [2, 1])):
+            result = client.get(path, params={"sort": sort, "page_size": 2}).json()
+            assert [row["id"] for row in result["items"]] == top_ids
+
+        with sessions.begin() as db:
+            for topic in db.scalars(select(Topic)):
+                topic.is_enabled = False
+        assert client.get(path, params={"paginate": "false"}).json() == {
+            "items": [],
+            "page": 1,
+            "page_size": 0,
+            "total": 0,
+        }
+
+
 def test_topic_participation_rolls_back_with_fragment(sessions, monkeypatch):
     with sessions.begin() as session:
         session.add(make_topic(1))

@@ -61,9 +61,24 @@ def page_data(items: list, page: int, size: int, total: int) -> dict:
     return {"items": items, "page": page, "page_size": size, "total": total}
 
 
-def paginate(db: Session, statement, page: int, size: int, render) -> dict:
-    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    rows = db.scalars(statement.offset((page - 1) * size).limit(size)).all()
+# [新增] 目录列表可先选出完整结果或当前页，再批量组装子项。
+def select_page(db: Session, statement, page: int, size: int, *, paginate_results: bool):
+    if paginate_results:
+        total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        rows = db.scalars(statement.offset((page - 1) * size).limit(size)).all()
+        return rows, page, size, total
+    rows = db.scalars(statement).all()
+    return rows, 1, len(rows), len(rows)
+
+
+def paginate(
+    db: Session, statement, page: int, size: int, render, *, paginate_results=True
+) -> dict:
+    # [删除-旧] total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+    # rows = db.scalars(statement.offset((page - 1) * size).limit(size)).all()
+    rows, page, size, total = select_page(
+        db, statement, page, size, paginate_results=paginate_results
+    )
     return page_data([render(row) for row in rows], page, size, total)
 
 

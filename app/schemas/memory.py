@@ -21,6 +21,24 @@ Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 PG_INTEGER_MAX = (1 << 31) - 1
 PG_BIGINT_MAX = (1 << 63) - 1
 MemoryVisibility = Literal["public", "private", "secret"]
+# [新增] 会话列表兼容早期通过 order 指定方向的调用。
+SessionSort = Literal[
+    "default",
+    "last_recorded_at",
+    "created_at",
+    "last_recorded_at_asc",
+    "last_recorded_at_desc",
+    "created_at_asc",
+    "created_at_desc",
+]
+AssetSort = Literal["default", "created_at_asc", "created_at_desc"]
+FragmentSort = Literal[
+    "default",
+    "sequence_asc",
+    "sequence_desc",
+    "recorded_at_asc",
+    "recorded_at_desc",
+]
 
 
 class PageResponse(BaseModel):

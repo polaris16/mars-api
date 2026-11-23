@@ -5,8 +5,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, PaginateOnly
 from app.db.database import get_db
+from app.schemas.list_sort import IdSort
 from app.schemas.memory_review import (
     QuestionStatus,
     ReopenQuestion,
@@ -39,8 +40,11 @@ def list_memory_review_questions(
     page_size: PageSize = 20,
     session_id: SessionId | None = None,
     status: QuestionStatus = "pending",
+    paginate: PaginateOnly = True,
+    sort: IdSort = "default",
 ):
-    return service.list_questions(db, user, page, page_size, status, session_id)
+    # [删除-旧] return service.list_questions(db, user, page, page_size, status, session_id)
+    return service.list_questions(db, user, page, page_size, status, session_id, sort=sort)
 
 
 @router.post(

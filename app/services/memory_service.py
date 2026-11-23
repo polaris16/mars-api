@@ -25,12 +25,14 @@ from app.models import (
     UserRelationship,
 )
 from app.schemas.memory import (
+    AssetSort,
     AttachmentBatchCreate,
     AttachmentInput,
     AttachmentPatch,
     FragmentCreate,
     FragmentPatch,
     FragmentRawTranscriptUpdate,
+    FragmentSort,
     MediaAssetResponse,
     SessionCreate,
     SessionPatch,
@@ -424,6 +426,9 @@ class MemoryService:
         ]
         if is_favorite is not None:
             filters.append(MemorySession.is_favorite.is_(is_favorite))
+        # [修改] 带方向的排序值完整指定排序，早期 sort 与 order 组合继续有效。
+        if sort.endswith(("_asc", "_desc")):
+            sort, order = sort.rsplit("_", 1)
         sort_column = (
             MemorySession.created_at
             if sort == "created_at"
@@ -1184,6 +1189,8 @@ class MemoryService:
         page: int,
         page_size: int,
         storage: ObjectStorageService | None = None,
+        *,
+        sort: FragmentSort = "default",
     ) -> dict:
         self._session_access(session, user.id, session_id)
         total = (
@@ -1194,10 +1201,20 @@ class MemoryService:
             )
             or 0
         )
+        # [新增] 序号仍是默认顺序，也用于记录时间相同的片段。
+        fragment = MemoryFragment
+        order = {
+            "default": (fragment.sequence_no,),
+            "sequence_asc": (fragment.sequence_no,),
+            "sequence_desc": (fragment.sequence_no.desc(),),
+            "recorded_at_asc": (fragment.recorded_at.asc().nulls_last(), fragment.sequence_no),
+            "recorded_at_desc": (fragment.recorded_at.desc().nulls_last(), fragment.sequence_no),
+        }[sort]
         rows = session.scalars(
             select(MemoryFragment)
             .where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False))
-            .order_by(MemoryFragment.sequence_no)
+            # [删除-旧] .order_by(MemoryFragment.sequence_no)
+            .order_by(*order, fragment.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all()
@@ -1590,6 +1607,8 @@ class MemoryService:
         purpose: str | None,
         media_type: str | None,
         storage: ObjectStorageService,
+        *,
+        sort: AssetSort = "default",
     ) -> dict:
         filters = [
             MediaAsset.uploaded_by_user_id == user.id,
@@ -1601,10 +1620,17 @@ class MemoryService:
         if media_type:
             filters.append(MediaAsset.media_type == media_type)
         total = session.scalar(select(func.count(MediaAsset.id)).where(*filters)) or 0
+        # [新增] 同一创建时间使用 ID 保持翻页稳定。
+        created_at = (
+            MediaAsset.created_at.asc()
+            if sort == "created_at_asc"
+            else MediaAsset.created_at.desc()
+        )
         rows = session.scalars(
             select(MediaAsset)
             .where(*filters)
-            .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
+            # [删除-旧] .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
+            .order_by(created_at, MediaAsset.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all()

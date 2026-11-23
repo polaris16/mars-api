@@ -6,8 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from app.schemas.list_sort import NameSort
+
 # [删除-旧] RelationshipType = Literal["family", "agent", "caregiver", "other"]
 RelationshipType = Literal["family", "agent", "caregiver", "other", "contact"]
+# [新增] 省略排序时保留各列表的既有顺序。
+RelationshipSort = Literal["default", "name_asc", "name_desc"]
 RelationCode = Literal[
     "parent_of",
     "child_of",
@@ -119,6 +123,9 @@ class ContactSearchRequest(BaseModel):
     ]
     page: int = Field(default=1, ge=1, le=2**31 - 1)
     page_size: int = Field(default=20, ge=1, le=20)
+    # [新增] 排序与分页参数留在请求体，候选检索始终分页。
+    paginate: Literal[True] = Field(default=True, description="候选搜索仅支持分页")
+    sort: NameSort = "default"
 
 
 class ContactSearchResponse(BaseModel):

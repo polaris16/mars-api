@@ -6,12 +6,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Path, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, PaginateOnly
 from app.db.database import get_db
+from app.schemas.list_sort import IdSort, NameSort
 from app.schemas.memory_processing import (
-    CandidateResolutionCreate, CandidateResolutionResponse, DraftVersionCreate, DraftVersionPage,
-    DraftVersionResponse, EntityCandidatePage, EntityDetail, EntityPage, EntityType,
-    ProcessingJobCreate, ProcessingJobResponse, ProcessingResponse,
+    CandidateResolutionCreate,
+    CandidateResolutionResponse,
+    DraftVersionCreate,
+    DraftVersionPage,
+    DraftVersionResponse,
+    EntityCandidatePage,
+    EntityDetail,
+    EntityPage,
+    EntityType,
+    ProcessingJobCreate,
+    ProcessingJobResponse,
+    ProcessingResponse,
 )
 from app.services.memory_entities import MemoryEntityService
 from app.services.memory_pipeline import MemoryPipelineService
@@ -55,10 +65,18 @@ def create_processing_job(
 
 @router.get(f"{FRAGMENT}/draft-versions", response_model=DraftVersionPage, summary="查询整理稿版本")
 def list_drafts(
-    session_id: Id, fragment_id: Id, user: CurrentUser, db: Db, service: Pipeline,
-    page: Page = 1, page_size: PageSize = 20,
+    session_id: Id,
+    fragment_id: Id,
+    user: CurrentUser,
+    db: Db,
+    service: Pipeline,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    paginate: PaginateOnly = True,
+    sort: IdSort = "default",
 ):
-    return service.list_drafts(db, user, session_id, fragment_id, page, page_size)
+    # [删除-旧] return service.list_drafts(db, user, session_id, fragment_id, page, page_size)
+    return service.list_drafts(db, user, session_id, fragment_id, page, page_size, sort=sort)
 
 
 @router.get(
@@ -84,10 +102,21 @@ def save_draft(
 
 @router.get("/memory-entities", response_model=EntityPage, summary="查询会话证据支持的实体")
 def list_entities(
-    session_id: Id, user: CurrentUser, db: Db, service: Entities, page: Page = 1,
-    page_size: PageSize = 20, entity_type: EntityType | None = None, element_id: QueryId | None = None,
+    session_id: Id,
+    user: CurrentUser,
+    db: Db,
+    service: Entities,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    entity_type: EntityType | None = None,
+    element_id: QueryId | None = None,
+    paginate: PaginateOnly = True,
+    sort: NameSort = "default",
 ):
-    return service.list_entities(db, user, session_id, page, page_size, entity_type, element_id)
+    # [删除-旧] return service.list_entities(db, user, session_id, page, page_size, entity_type, element_id)
+    return service.list_entities(
+        db, user, session_id, page, page_size, entity_type, element_id, sort=sort
+    )
 
 
 @router.get("/memory-entities/{entity_id}", response_model=EntityDetail, summary="查询实体及可见别名")
@@ -97,10 +126,18 @@ def get_entity(session_id: Id, entity_id: Id, user: CurrentUser, db: Db, service
 
 @router.get("/entity-candidates", response_model=EntityCandidatePage, summary="查询实体待确认项")
 def list_candidates(
-    session_id: Id, user: CurrentUser, db: Db, service: Entities, page: Page = 1,
-    page_size: PageSize = 20, element_id: QueryId | None = None,
+    session_id: Id,
+    user: CurrentUser,
+    db: Db,
+    service: Entities,
+    page: Page = 1,
+    page_size: PageSize = 20,
+    element_id: QueryId | None = None,
+    paginate: PaginateOnly = True,
+    sort: IdSort = "default",
 ):
-    return service.list_candidates(db, user, session_id, page, page_size, element_id)
+    # [删除-旧] return service.list_candidates(db, user, session_id, page, page_size, element_id)
+    return service.list_candidates(db, user, session_id, page, page_size, element_id, sort=sort)
 
 
 @router.post(

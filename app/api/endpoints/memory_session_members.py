@@ -5,13 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, Paginate
 from app.db.database import get_db
 from app.schemas.memory_session_member import (
     MemberGrantRequest,
     MemberPage,
     MemberResponse,
     MemberRevokeRequest,
+    MemberSort,
 )
 from app.services.memory_session_member_service import MemorySessionMemberService
 
@@ -31,8 +32,11 @@ def list_members(
     service: MemberService,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    paginate: Paginate = True,
+    sort: MemberSort = "default",
 ) -> MemberPage:
-    return service.list_members(db, user, session_id, page, page_size)
+    # [删除-旧] return service.list_members(db, user, session_id, page, page_size)
+    return service.list_members(db, user, session_id, page, page_size, paginate=paginate, sort=sort)
 
 
 @router.post(

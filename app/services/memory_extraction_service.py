@@ -25,6 +25,7 @@ from app.models import (
     MemorySourceRevision,
     User,
 )
+from app.schemas.list_sort import CreatedAtSort, IdSort
 from app.schemas.memory_extraction import (
     ExtractedElement,
     ExtractionJobPage,
@@ -850,12 +851,17 @@ class MemoryExtractionService:
         fragment_id: int,
         page: int,
         page_size: int,
+        *,
+        sort: CreatedAtSort = "default",
     ) -> ExtractionJobPage:
         self.memories._fragment_access(db, user.id, fragment_id, expected_session_id=session_id)
         query = self._jobs(session_id).where(AIProcessingJob.source_fragment_id == fragment_id)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        created_at = AIProcessingJob.created_at
+        ordering = created_at.asc() if sort == "created_at_asc" else created_at.desc()
         rows = db.scalars(
-            query.order_by(AIProcessingJob.created_at.desc(), AIProcessingJob.id.desc())
+            # [删除-旧] query.order_by(AIProcessingJob.created_at.desc(), AIProcessingJob.id.desc())
+            query.order_by(ordering, AIProcessingJob.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -896,6 +902,7 @@ class MemoryExtractionService:
         review_status: str | None = None,
         origin: str | None = None,
         verification_status: str | None = None,
+        sort: IdSort = "default",
     ) -> MemoryElementPage:
         # [删除-旧] self.memories._session_access(db, user.id, session_id)
         # [新增] 共享读路径及其过滤条件均隐藏跨会话验证结论。
@@ -926,8 +933,10 @@ class MemoryExtractionService:
             if value is not None:
                 query = query.where(column == value)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        ordering = MemoryElement.id.desc() if sort == "id_desc" else MemoryElement.id
         rows = db.scalars(
-            query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size)
+            # [删除-旧] query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size)
+            query.order_by(ordering).offset((page - 1) * page_size).limit(page_size)
         )
         return MemoryElementPage(
             # [删除-旧] items=[self.element_response(db, row) for row in rows],

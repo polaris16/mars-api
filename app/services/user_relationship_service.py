@@ -10,8 +10,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
 from app.models import MemoryContributor, MemorySession, User, UserRelationship
+from app.schemas.list_sort import CreatedAtSort
 from app.schemas.user_relationship import (
     ContactListResponse,
     ContactProfile,
@@ -26,6 +28,7 @@ from app.schemas.user_relationship import (
     RelationshipCreateRequest,
     RelationshipListResponse,
     RelationshipRecordResponse,
+    RelationshipSort,
 )
 from app.services.memory_validation_queue import schedule_material_validation
 
@@ -103,6 +106,9 @@ class UserRelationshipService:
         user: User,
         page: int,
         page_size: int,
+        *,
+        paginate: bool = True,
+        sort: RelationshipSort = "default",
     ) -> RelationshipListResponse:
         user_id = user.id
         visible_groups = select(UserRelationship.relationship_pair_id).where(
@@ -126,14 +132,44 @@ class UserRelationshipService:
             .group_by(UserRelationship.relationship_pair_id)
             .subquery()
         )
-        total = session.scalar(select(func.count()).select_from(group_order)) or 0
-        page_groups = (
-            select(group_order)
-            .order_by(group_order.c.latest_created_at.desc(), group_order.c.latest_id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .subquery()
-        )
+        # [删除-旧] total = session.scalar(select(func.count()).select_from(group_order)) or 0
+        # page_groups = (
+        #     select(group_order)
+        #     .order_by(group_order.c.latest_created_at.desc(), group_order.c.latest_id.desc())
+        #     .offset((page - 1) * page_size)
+        #     .limit(page_size)
+        #     .subquery()
+        # )
+        # [修改] 昵称排序在切页前使用调用者可见方向的对方昵称。
+        total = session.scalar(select(func.count()).select_from(group_order)) if paginate else 0
+        if sort != "default":
+            relation = UserRelationship
+            subject_is_user = relation.subject_user_id == user_id
+            counterpart_id = (
+                select(
+                    case(
+                        (subject_is_user, relation.related_user_id), else_=relation.subject_user_id
+                    )
+                )
+                .where(
+                    relation.relationship_pair_id == group_order.c.relationship_pair_id,
+                    or_(subject_is_user, relation.related_user_id == user_id),
+                    relation.is_del.is_(False),
+                )
+                .order_by(subject_is_user.desc(), relation.id.desc())
+                .limit(1)
+                .correlate(group_order)
+                .scalar_subquery()
+            )
+            group_order = (
+                select(group_order, self._nickname_key().label("nickname"))
+                .outerjoin(User, and_(User.id == counterpart_id, User.is_del.is_(False)))
+                .subquery()
+            )
+        group_query = select(group_order).order_by(*self._group_order(group_order, sort))
+        if paginate:
+            group_query = group_query.offset((page - 1) * page_size).limit(page_size)
+        page_groups = group_query.subquery()
         rows = list(
             session.scalars(
                 select(UserRelationship)
@@ -145,8 +181,9 @@ class UserRelationshipService:
                     UserRelationship.is_del.is_(False),
                 )
                 .order_by(
-                    page_groups.c.latest_created_at.desc(),
-                    page_groups.c.latest_id.desc(),
+                    # [删除-旧] page_groups.c.latest_created_at.desc(),
+                    # page_groups.c.latest_id.desc(),
+                    *self._group_order(page_groups, sort),
                     UserRelationship.id.desc(),
                 )
             ).all()
@@ -173,7 +210,29 @@ class UserRelationshipService:
             result.append(
                 RelationshipRecordResponse.model_validate(row).model_copy(update={"status": status})
             )
-        return RelationshipListResponse(items=result, page=page, page_size=page_size, total=total)
+        # [删除-旧] return RelationshipListResponse(items=result, page=page, page_size=page_size, total=total)
+        if not paginate:
+            page, page_size, total = 1, len(result), len(result)
+        return RelationshipListResponse(
+            items=result, page=page, page_size=page_size, total=total or 0
+        )
+
+    # [新增] 显式昵称排序忽略大小写，空昵称始终放在最后。
+    @staticmethod
+    def _nickname_key() -> ColumnElement[str]:
+        return func.lower(func.nullif(func.trim(User.display_name), ""))
+
+    @staticmethod
+    def _nickname_order(nickname: ColumnElement[str], sort: RelationshipSort) -> ColumnElement[str]:
+        return (nickname.desc() if sort == "name_desc" else nickname.asc()).nulls_last()
+
+    @classmethod
+    def _group_order(
+        cls, groups: Subquery, sort: RelationshipSort
+    ) -> tuple[ColumnElement, ColumnElement]:
+        if sort != "default":
+            return cls._nickname_order(groups.c.nickname, sort), groups.c.latest_id.desc()
+        return groups.c.latest_created_at.desc(), groups.c.latest_id.desc()
 
     # [新增] 列表、候选和申请历史使用相同的等待期限与关系期限。
     @staticmethod
@@ -216,6 +275,9 @@ class UserRelationshipService:
         page: int,
         page_size: int,
         keyword: str | None,
+        *,
+        paginate: bool = True,
+        sort: RelationshipSort = "default",
     ) -> ContactListResponse:
         now = datetime.now(timezone.utc)
         relation = UserRelationship
@@ -265,8 +327,20 @@ class UserRelationshipService:
         if keyword and (keyword := keyword.strip()):
             query = query.where(User.display_name.icontains(keyword, autoescape=True))
 
-        total = session.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
-        rows = session.execute(query.offset((page - 1) * page_size).limit(page_size))
+        # [删除-旧] total = session.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
+        # rows = session.execute(query.offset((page - 1) * page_size).limit(page_size))
+        # [修改] 查询生效的联系人时，先按指定昵称顺序排列，再决定是否切页。
+        if view == "active" and sort != "default":
+            query = query.order_by(None).order_by(
+                self._nickname_order(self._nickname_key(), sort), relation.id.asc()
+            )
+        total = 0
+        if paginate:
+            total = session.scalar(
+                select(func.count()).select_from(query.order_by(None).subquery())
+            )
+            query = query.offset((page - 1) * page_size).limit(page_size)
+        rows = session.execute(query)
         items = [
             ContactRecordResponse(
                 **RelationshipRecordResponse.model_validate(row).model_dump(),
@@ -274,6 +348,9 @@ class UserRelationshipService:
             )
             for row, contact_id, name, avatar in rows
         ]
+        # [新增] 全量响应沿用分页结构，计数取实际结果。
+        if not paginate:
+            page, page_size, total = 1, len(items), len(items)
         return ContactListResponse(items=items, page=page, page_size=page_size, total=total or 0)
 
     # [新增] 只投影供 App 选择目标所需的资料，关系过滤先于分页。
@@ -312,9 +389,18 @@ class UserRelationshipService:
             User.is_del.is_(False), User.id != user_id, matches, ~blocked
         )
         total = session.scalar(select(func.count()).select_from(query.subquery()))
+        # [新增] 手机号精确命中优先，显式排序只改变组内昵称顺序。
+        nickname_order = (
+            func.lower(User.display_name).asc().nulls_last()
+            if body.sort == "default"
+            else self._nickname_order(self._nickname_key(), body.sort)
+        )
         rows = session.execute(
             query.order_by(
-                phone_match.desc(), func.lower(User.display_name).asc().nulls_last(), User.id
+                # [删除-旧] phone_match.desc(), func.lower(User.display_name).asc().nulls_last(), User.id
+                phone_match.desc(),
+                nickname_order,
+                User.id,
             )
             .offset((body.page - 1) * body.page_size)
             .limit(body.page_size)
@@ -335,6 +421,8 @@ class UserRelationshipService:
         desired_status: ContactRequestStatus | None,
         page: int,
         page_size: int,
+        *,
+        sort: CreatedAtSort = "default",
     ) -> ContactRequestListResponse:
         now = datetime.now(timezone.utc)
         relation = UserRelationship
@@ -376,8 +464,12 @@ class UserRelationshipService:
         if desired_status is not None:
             query = query.where(request_status == desired_status)
         total = session.scalar(select(func.count()).select_from(query.subquery()))
+        created_at = (
+            relation.created_at.asc() if sort == "created_at_asc" else relation.created_at.desc()
+        )
         rows = session.execute(
-            query.order_by(relation.created_at.desc(), relation.id.desc())
+            # [删除-旧] query.order_by(relation.created_at.desc(), relation.id.desc())
+            query.order_by(created_at, relation.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

@@ -11,18 +11,27 @@ from pydantic import AwareDatetime
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, Paginate, PaginateOnly
 from app.core.config import get_settings
 from app.db.database import get_db
 from app.schemas.benefits import (
     BenefitActionView,
     BenefitEnterpriseView,
     BenefitGrantView,
+    BenefitInvitationSort,
     BenefitInvitationView,
     BenefitIssueView,
+    BenefitNameSort,
+    BenefitOrderSort,
     BenefitOrderView,
+    BenefitPackageSort,
     BenefitPage,
+    BenefitPlanSort,
     BenefitPlanView,
+    BenefitPurchaseSort,
+    BenefitServiceSort,
+    BenefitStaffSort,
+    BenefitVersionSort,
     ClaimInput,
     ContactReplace,
     EnterpriseCreate,
@@ -104,6 +113,8 @@ class Pagination:
 
 Context = Annotated[BenefitContext, Depends(benefit_context)]
 Page = Annotated[Pagination, Depends(Pagination)]
+# [新增] 运营目录列表可切到全量模式。
+CatalogPaginate = Annotated[bool, Query(description="设为 false 时返回全部匹配记录")]
 Key = Annotated[UUID, Header(alias="Idempotency-Key")]
 Storage = Annotated[ObjectStorageService, Depends(get_object_storage_service)]
 PurchaseStatus = Literal["draft", "active", "closed"]
@@ -140,8 +151,14 @@ orders = BenefitOrderService()
 
 
 @ops.get("/enterprises")
-def list_enterprises(ctx: Context, page: Page) -> dict:
-    return catalog.enterprises(ctx, page.number, page.size)
+def list_enterprises(
+    ctx: Context,
+    page: Page,
+    paginate: PaginateOnly = True,
+    sort: BenefitNameSort = "default",
+) -> dict:
+    # [删除-旧] return catalog.enterprises(ctx, page.number, page.size)
+    return catalog.enterprises(ctx, page.number, page.size, sort=sort)
 
 
 @ops.post("/enterprises", status_code=201)
@@ -155,8 +172,14 @@ def patch_enterprise(ctx: Context, id: Id, body: EnterprisePatch) -> dict:
 
 
 @ops.get("/benefit-staff")
-def list_benefit_staff(ctx: Context, page: Page) -> dict:
-    return catalog.staff(ctx, page.number, page.size)
+def list_benefit_staff(
+    ctx: Context,
+    page: Page,
+    paginate: PaginateOnly = True,
+    sort: BenefitStaffSort = "default",
+) -> dict:
+    # [删除-旧] return catalog.staff(ctx, page.number, page.size)
+    return catalog.staff(ctx, page.number, page.size, sort=sort)
 
 
 @ops.put("/benefit-staff/{user_id}")
@@ -165,8 +188,11 @@ def replace_benefit_staff(ctx: Context, user_id: Id, body: StaffReplace) -> dict
 
 
 @ops.get("/benefit-services")
-def list_benefit_services(ctx: Context, page: Page) -> dict:
-    return catalog.services(ctx, page.number, page.size)
+def list_benefit_services(
+    ctx: Context, page: Page, paginate: CatalogPaginate = True, sort: BenefitServiceSort = "default"
+) -> dict:
+    # [删除-旧] return catalog.services(ctx, page.number, page.size)
+    return catalog.services(ctx, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
 @ops.post("/benefit-services", status_code=201)
@@ -180,8 +206,15 @@ def patch_benefit_service(ctx: Context, id: Id, body: ServicePatch) -> dict:
 
 
 @ops.get("/benefit-services/{id}/versions")
-def list_benefit_service_versions(ctx: Context, id: Id, page: Page) -> dict:
-    return catalog.versions(ctx, id, page.number, page.size)
+def list_benefit_service_versions(
+    ctx: Context,
+    id: Id,
+    page: Page,
+    paginate: CatalogPaginate = True,
+    sort: BenefitVersionSort = "default",
+) -> dict:
+    # [删除-旧] return catalog.versions(ctx, id, page.number, page.size)
+    return catalog.versions(ctx, id, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
 @ops.post("/benefit-services/{id}/versions", status_code=201)
@@ -207,8 +240,11 @@ def retire_benefit_service_version(ctx: Context, id: Id, version_id: Id) -> dict
 
 
 @ops.get("/benefit-packages")
-def list_benefit_packages(ctx: Context, page: Page) -> dict:
-    return catalog.packages(ctx, page.number, page.size)
+def list_benefit_packages(
+    ctx: Context, page: Page, paginate: CatalogPaginate = True, sort: BenefitPackageSort = "default"
+) -> dict:
+    # [删除-旧] return catalog.packages(ctx, page.number, page.size)
+    return catalog.packages(ctx, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
 @ops.get("/benefit-packages/{id}")
@@ -238,9 +274,14 @@ def retire_benefit_package(ctx: Context, id: Id) -> dict:
 
 @ops.get("/benefit-purchases")
 def list_ops_benefit_purchases(
-    ctx: Context, page: Page, status: PurchaseStatus | None = None
+    ctx: Context,
+    page: Page,
+    status: PurchaseStatus | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitPurchaseSort = "default",
 ) -> dict:
-    return catalog.purchases(ctx, page.number, page.size, status=status)
+    # [删除-旧] return catalog.purchases(ctx, page.number, page.size, status=status)
+    return catalog.purchases(ctx, page.number, page.size, status=status, sort=sort)
 
 
 @ops.post("/benefit-purchases", status_code=201)
@@ -274,13 +315,28 @@ def close_benefit_purchase(ctx: Context, batch_id: Id) -> dict:
 
 
 @consumer.get("/enterprises")
-def list_my_enterprises(ctx: Context, page: Page) -> dict:
-    return catalog.enterprises(ctx, page.number, page.size, own=True)
+def list_my_enterprises(
+    ctx: Context,
+    page: Page,
+    paginate: Paginate = True,
+    sort: BenefitNameSort = "default",
+) -> dict:
+    # [删除-旧] return catalog.enterprises(ctx, page.number, page.size, own=True)
+    return catalog.enterprises(
+        ctx, page.number, page.size, own=True, sort=sort, paginate_results=paginate
+    )
 
 
 @enterprise.get("/members")
-def list_enterprise_members(ctx: Context, enterprise_id: Id, page: Page) -> dict:
-    return catalog.members(ctx, enterprise_id, page.number, page.size)
+def list_enterprise_members(
+    ctx: Context,
+    enterprise_id: Id,
+    page: Page,
+    paginate: PaginateOnly = True,
+    sort: BenefitNameSort = "default",
+) -> dict:
+    # [删除-旧] return catalog.members(ctx, enterprise_id, page.number, page.size)
+    return catalog.members(ctx, enterprise_id, page.number, page.size, sort=sort)
 
 
 @enterprise.post("/members", status_code=201)
@@ -297,9 +353,15 @@ def update_enterprise_member(
 
 @enterprise.get("/benefit-purchases")
 def list_enterprise_benefit_purchases(
-    ctx: Context, enterprise_id: Id, page: Page, status: PurchaseStatus | None = None
+    ctx: Context,
+    enterprise_id: Id,
+    page: Page,
+    status: PurchaseStatus | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitPurchaseSort = "default",
 ) -> dict:
-    return catalog.purchases(ctx, page.number, page.size, enterprise_id, status=status)
+    # [删除-旧] return catalog.purchases(ctx, page.number, page.size, enterprise_id, status=status)
+    return catalog.purchases(ctx, page.number, page.size, enterprise_id, status=status, sort=sort)
 
 
 @enterprise.get("/benefit-purchases/{batch_id}")
@@ -335,9 +397,18 @@ def issue_benefit_grants(
 
 @enterprise.get("/benefit-purchases/{batch_id}/grants")
 def list_issued_benefit_grants(
-    ctx: Context, enterprise_id: Id, batch_id: Id, page: Page, status: GrantStatus | None = None
+    ctx: Context,
+    enterprise_id: Id,
+    batch_id: Id,
+    page: Page,
+    status: GrantStatus | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitInvitationSort = "default",
 ) -> dict:
-    return grants.issued_grants(ctx, enterprise_id, batch_id, status, page.number, page.size)
+    # [删除-旧] return grants.issued_grants(ctx, enterprise_id, batch_id, status, page.number, page.size)
+    return grants.issued_grants(
+        ctx, enterprise_id, batch_id, status, page.number, page.size, sort=sort
+    )
 
 
 @enterprise.post("/benefit-grants/{grant_id}/void")
@@ -346,8 +417,14 @@ def void_benefit_grant(ctx: Context, enterprise_id: Id, grant_id: Id, body: Gran
 
 
 @consumer.get("/benefit-invitations", response_model=BenefitPage[BenefitInvitationView])
-def list_benefit_invitations(ctx: Context, page: Page) -> dict:
-    return grants.invitations(ctx, page.number, page.size)
+def list_benefit_invitations(
+    ctx: Context,
+    page: Page,
+    paginate: PaginateOnly = True,
+    sort: BenefitInvitationSort = "default",
+) -> dict:
+    # [删除-旧] return grants.invitations(ctx, page.number, page.size)
+    return grants.invitations(ctx, page.number, page.size, sort=sort)
 
 
 @consumer.post("/benefit-claims", status_code=201, response_model=BenefitGrantView)
@@ -359,13 +436,26 @@ def claim_benefit_grant(ctx: Context, body: ClaimInput, response: Response) -> d
 
 
 @consumer.get("/benefit-enterprises", response_model=BenefitPage[BenefitEnterpriseView])
-def list_my_benefit_enterprises(ctx: Context, page: Page) -> dict:
-    return grants.enterprises(ctx, page.number, page.size)
+def list_my_benefit_enterprises(
+    ctx: Context,
+    page: Page,
+    paginate: Paginate = True,
+    sort: BenefitNameSort = "default",
+) -> dict:
+    # [删除-旧] return grants.enterprises(ctx, page.number, page.size)
+    return grants.enterprises(ctx, page.number, page.size, sort=sort, paginate_results=paginate)
 
 
 @consumer.get("/benefit-plans", response_model=BenefitPage[BenefitPlanView])
-def list_my_benefit_plans(ctx: Context, page: Page, enterprise_id: Id | None = None) -> dict:
-    return grants.plans(ctx, enterprise_id, page.number, page.size)
+def list_my_benefit_plans(
+    ctx: Context,
+    page: Page,
+    enterprise_id: Id | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitPlanSort = "default",
+) -> dict:
+    # [删除-旧] return grants.plans(ctx, enterprise_id, page.number, page.size)
+    return grants.plans(ctx, enterprise_id, page.number, page.size, sort=sort)
 
 
 @consumer.get("/benefit-grants/{grant_id}", response_model=BenefitGrantView)
@@ -396,9 +486,15 @@ def create_benefit_service_order(
 
 @consumer.get("/benefit-service-orders", response_model=BenefitPage[BenefitOrderView])
 def list_my_benefit_service_orders(
-    ctx: Context, page: Page, grant_id: Id | None = None, status: OrderStatus | None = None
+    ctx: Context,
+    page: Page,
+    grant_id: Id | None = None,
+    status: OrderStatus | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitOrderSort = "default",
 ) -> dict:
-    return orders.orders(ctx, page.number, page.size, grant_id=grant_id, status=status)
+    # [删除-旧] return orders.orders(ctx, page.number, page.size, grant_id=grant_id, status=status)
+    return orders.orders(ctx, page.number, page.size, grant_id=grant_id, status=status, sort=sort)
 
 
 @consumer.get("/benefit-service-orders/{order_id}", response_model=BenefitOrderView)
@@ -421,6 +517,8 @@ def list_fulfillment_benefit_orders(
     status: OrderStatus | None = None,
     start_from: AwareDatetime | None = None,
     start_before: AwareDatetime | None = None,
+    paginate: PaginateOnly = True,
+    sort: BenefitOrderSort = "default",
 ) -> dict:
     return orders.orders(
         ctx,
@@ -431,6 +529,7 @@ def list_fulfillment_benefit_orders(
         status=status,
         start_from=start_from,
         start_before=start_before,
+        sort=sort,
     )
 
 

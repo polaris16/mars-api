@@ -5,10 +5,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    LifeEntity, LifeEntityAlias, MemoryDraftVersion, MemoryElement, MemoryElementEntity,
-    MemoryEntityCandidate, MemoryEntityEvidence, MemoryEntityResolution, MemoryFragment,
-    MemorySession, MemorySourceRevision, User,
+    LifeEntity,
+    LifeEntityAlias,
+    MemoryDraftVersion,
+    MemoryElement,
+    MemoryElementEntity,
+    MemoryEntityCandidate,
+    MemoryEntityEvidence,
+    MemoryEntityResolution,
+    MemoryFragment,
+    MemorySession,
+    MemorySourceRevision,
+    User,
 )
+from app.schemas.list_sort import IdSort, NameSort
 from app.schemas.memory_extraction import StructuredElement
 from app.schemas.memory_processing import CandidateResolutionCreate
 from app.services.memory_service import MemoryService
@@ -351,8 +361,16 @@ class MemoryEntityService:
         return list(refs.values())
 
     def list_entities(
-        self, db: Session, user: User, session_id: int, page: int, page_size: int,
-        entity_type: str | None, element_id: int | None,
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        page: int,
+        page_size: int,
+        entity_type: str | None,
+        element_id: int | None,
+        *,
+        sort: NameSort = "default",
     ) -> dict:
         self.memories._session_access(db, user.id, session_id)
         query = self._evidence_query().where(MemorySession.id == session_id)
@@ -360,12 +378,26 @@ class MemoryEntityService:
             query = query.where(LifeEntity.entity_type == entity_type)
         if element_id is not None:
             query = query.where(MemoryElement.id == element_id)
+        # [删除-旧] summaries = query.with_only_columns(
+        #     LifeEntity.id, LifeEntity.entity_type, func.min(LifeEntityAlias.alias_name).label("display_name")
+        # ).group_by(LifeEntity.id, LifeEntity.entity_type)
+        # [新增] 使用当前会话证据可见的显示名称排序。
+        display_name = func.min(LifeEntityAlias.alias_name).label("display_name")
         summaries = query.with_only_columns(
-            LifeEntity.id, LifeEntity.entity_type, func.min(LifeEntityAlias.alias_name).label("display_name")
+            LifeEntity.id,
+            LifeEntity.entity_type,
+            display_name,
         ).group_by(LifeEntity.id, LifeEntity.entity_type)
+        name_key = func.lower(display_name)
+        order = {
+            "default": (LifeEntity.id,),
+            "name_asc": (name_key.asc(), LifeEntity.id),
+            "name_desc": (name_key.desc(), LifeEntity.id),
+        }[sort]
         total = db.scalar(select(func.count()).select_from(summaries.subquery())) or 0
         items = db.execute(
-            summaries.order_by(LifeEntity.id).offset((page - 1) * page_size).limit(page_size)
+            # [删除-旧] summaries.order_by(LifeEntity.id).offset((page - 1) * page_size).limit(page_size)
+            summaries.order_by(*order).offset((page - 1) * page_size).limit(page_size)
         ).mappings()
         return {"items": list(items), "page": page, "page_size": page_size, "total": total}
 
@@ -400,7 +432,15 @@ class MemoryEntityService:
         )
 
     def list_candidates(
-        self, db: Session, user: User, session_id: int, page: int, page_size: int, element_id: int | None
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        page: int,
+        page_size: int,
+        element_id: int | None,
+        *,
+        sort: IdSort = "default",
     ) -> dict:
         memory, role = self.memories._session_access(db, user.id, session_id)
         if role != "owner":
@@ -410,19 +450,33 @@ class MemoryEntityService:
             query = query.where(MemoryEntityCandidate.element_id == element_id)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
         items = []
-        for row in db.scalars(query.order_by(MemoryEntityCandidate.id).offset((page - 1) * page_size).limit(page_size)):
+        # [删除-旧] for row in db.scalars(query.order_by(MemoryEntityCandidate.id).offset((page - 1) * page_size).limit(page_size)):
+        ordering = (
+            MemoryEntityCandidate.id.desc() if sort == "id_desc" else MemoryEntityCandidate.id
+        )
+        page_query = query.order_by(ordering).offset((page - 1) * page_size).limit(page_size)
+        for row in db.scalars(page_query):
             entities = db.scalars(
-                self._owner_entities(memory.owner_user_id).where(LifeEntity.id.in_(row.candidate_entity_ids))
+                self._owner_entities(memory.owner_user_id).where(
+                    LifeEntity.id.in_(row.candidate_entity_ids)
+                )
             )
-            items.append({
-                "id": row.id, "revision": row.revision, "mention_text": row.mention_text,
-                "element_id": row.element_id, "entity_type": row.entity_type,
-                "narrator_user_id": row.narrator_user_id,
-                "evidence": row.evidence, "candidate_entities": [
-                    {"id": entity.id, "display_name": entity.canonical_name}
-                    for entity in entities if self._supported(db, entity.id)
-                ],
-            })
+            items.append(
+                {
+                    "id": row.id,
+                    "revision": row.revision,
+                    "mention_text": row.mention_text,
+                    "element_id": row.element_id,
+                    "entity_type": row.entity_type,
+                    "narrator_user_id": row.narrator_user_id,
+                    "evidence": row.evidence,
+                    "candidate_entities": [
+                        {"id": entity.id, "display_name": entity.canonical_name}
+                        for entity in entities
+                        if self._supported(db, entity.id)
+                    ],
+                }
+            )
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
     @staticmethod

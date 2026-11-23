@@ -7,7 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import MemorySession, MemorySessionMember, User, UserRelationship
-from app.schemas.memory_session_member import MemberGrantRequest, MemberPage, MemberResponse
+from app.schemas.memory_session_member import (
+    MemberGrantRequest,
+    MemberPage,
+    MemberResponse,
+    MemberSort,
+)
 from app.services.memory_validation_queue import schedule_material_validation
 from app.services.user_relationship_service import UserRelationshipService
 
@@ -202,21 +207,43 @@ class MemorySessionMemberService:
         )
 
     def list_members(
-        self, session: Session, user: User, session_id: int, page: int, page_size: int
+        self,
+        session: Session,
+        user: User,
+        session_id: int,
+        page: int,
+        page_size: int,
+        *,
+        paginate: bool = True,
+        sort: MemberSort = "default",
     ) -> MemberPage:
         memory, _ = self.require_manager(session, session_id, user.id, lock=False)
         query = select(MemorySessionMember).where(
             MemorySessionMember.session_id == session_id,
             MemorySessionMember.is_del.is_(False),
         )
-        total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
-        rows = session.execute(
+        # [删除-旧] total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+        # rows = session.execute(
+        #     query.join(User, User.id == MemorySessionMember.user_id)
+        #     .add_columns(User.is_del)
+        #     .order_by(MemorySessionMember.granted_at.desc(), MemorySessionMember.id.desc())
+        #     .offset((page - 1) * page_size)
+        #     .limit(page_size)
+        # ).all()
+        # [新增] 全量和分页都使用相同的会话管理权限和记录范围。
+        granted_at = MemorySessionMember.granted_at
+        ordering = granted_at.asc() if sort == "granted_at_asc" else granted_at.desc()
+        listing = (
             query.join(User, User.id == MemorySessionMember.user_id)
             .add_columns(User.is_del)
-            .order_by(MemorySessionMember.granted_at.desc(), MemorySessionMember.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        ).all()
+            .order_by(ordering, MemorySessionMember.id.desc())
+        )
+        if paginate:
+            total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+            listing = listing.offset((page - 1) * page_size).limit(page_size)
+        rows = session.execute(listing).all()
+        if not paginate:
+            page, page_size, total = 1, len(rows), len(rows)
         now = datetime.now(timezone.utc)
         return MemberPage(
             items=[

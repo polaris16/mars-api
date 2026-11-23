@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from app.models import (
     Topic,
 )
 from app.services import user_relationship_service
+from app.services.object_storage_service import get_object_storage_service
 
 
 @pytest.mark.parametrize("accept_before_expiry", [False, True])
@@ -617,6 +619,137 @@ def test_owner_contributor_uses_existing_record_without_exposing_phone(client):
     assert result["total"] == 1 and result["items"] == [registered.json()]
 
 
+# [新增] 会话、素材和片段按可见范围排序，再签发当前页需要的文件链接。
+def test_memory_history_lists_sort_and_reject_full_mode(client):
+    alice = login(client, "13800000001")
+    provider = client.post(CONTRIBUTORS, headers=alice, json={"user_id": 1})
+    assert provider.status_code == 201, provider.text
+    now = datetime.now(timezone.utc)
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        first = db.get(MemorySession, 11)
+        second = db.get(MemorySession, 12)
+        first.created_at = now - timedelta(days=3)
+        first.last_material_at = now
+        second.created_at = now - timedelta(days=2)
+        second.last_material_at = now - timedelta(days=1)
+        second.is_favorite = True
+        for number, recorded_at in ((1, now), (2, now - timedelta(days=2))):
+            db.add(
+                MemoryFragment(
+                    session_id=11,
+                    sequence_no=number,
+                    source_type="text",
+                    contributor_id=provider.json()["id"],
+                    content_text=f"fragment {number}",
+                    recorded_at=recorded_at,
+                )
+            )
+        for asset_id, owner, created_at in (
+            (21, 1, now),
+            (22, 1, now - timedelta(days=2)),
+            (23, 2, now),
+        ):
+            db.add(
+                MediaAsset(
+                    id=asset_id,
+                    uploaded_by_user_id=owner,
+                    purpose="attachment",
+                    media_type="image",
+                    storage_provider="mock",
+                    storage_region="local",
+                    bucket_name="test",
+                    object_key=f"test-{asset_id}",
+                    content_type="image/png",
+                    expected_size_bytes=1,
+                    size_bytes=1,
+                    content_sha256=f"{asset_id:064x}",
+                    upload_status="uploaded",
+                    uploaded_at=now,
+                    upload_expires_at=now + timedelta(hours=1),
+                    created_at=created_at,
+                )
+            )
+
+    signed = []
+
+    def sign(key, _ttl):
+        signed.append(key)
+        return f"https://storage.example.test/{key}"
+
+    app.dependency_overrides[get_object_storage_service] = lambda: SimpleNamespace(
+        create_read_url=sign
+    )
+    sessions = "/api/recording-sessions"
+    fragments = f"{sessions}/11/fragments"
+    assets = "/api/media-assets"
+    for path in (sessions, fragments, assets):
+        result = client.get(path, headers=alice, params={"paginate": "false"})
+        assert result.status_code == 422, result.text
+        assert result.json()["detail"][0]["loc"] == ["query", "paginate"]
+    assert signed == []
+
+    def get(path, **params):
+        result = client.get(path, headers=alice, params=params)
+        assert result.status_code == 200, result.text
+        assert result.json()["total"] == 2
+        return result.json()["items"]
+
+    assert [row["id"] for row in get(sessions)] == [11, 12]
+    assert [row["id"] for row in get(sessions, sort="created_at", order="asc")] == [11, 12]
+    assert [row["id"] for row in get(sessions, sort="created_at_desc", order="asc")] == [12, 11]
+    assert [row["id"] for row in get(sessions, order="asc")] == [12, 11]
+    assert [row["sequence_no"] for row in get(fragments)] == [1, 2]
+    assert [row["sequence_no"] for row in get(fragments, sort="sequence_desc")] == [2, 1]
+    assert [row["sequence_no"] for row in get(fragments, sort="recorded_at_asc", page_size=1)] == [
+        2
+    ]
+    assert [row["id"] for row in get(assets, sort="created_at_asc", page_size=1)] == [22]
+    assert signed == ["test-22"]
+    assert [row["id"] for row in get(assets, sort="created_at_desc", page=2, page_size=1)] == [22]
+
+
+# [新增] 管理列表全量仍检查会话、成员与提供者权限。
+def test_collaboration_lists_sort_and_return_full_session_scope(client):
+    alice = login(client, "13800000001")
+    bob = login(client, "13800000002")
+    carol = login(client, "13800000003")
+    relation = confirm_relationship(client, alice, bob, user_id=2, kind="family", code="sibling_of")
+    for payload in (
+        {"user_id": 2, "role": "contributor", "source_relationship_id": relation},
+        {"user_id": 3, "role": "viewer"},
+    ):
+        result = client.post(MEMBERS, headers=alice, json=payload)
+        assert result.status_code == 201, result.text
+    for user_id in (1, 2):
+        result = client.post(CONTRIBUTORS, headers=alice, json={"user_id": user_id})
+        assert result.status_code == 201, result.text
+    now = datetime.now(timezone.utc)
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        db.get(MemorySessionMember, 1).granted_at = now - timedelta(days=1)
+        db.get(MemorySessionMember, 2).granted_at = now
+    for path, sort, expected_ids in (
+        (MEMBERS, "granted_at_asc", [1, 2]),
+        (CONTRIBUTORS, "id_desc", [2, 1]),
+    ):
+        default = client.get(path, headers=alice).json()
+        assert [row["id"] for row in default["items"]] == list(reversed(expected_ids))
+        assert client.get(path, headers=bob, params={"paginate": "false"}).status_code == 403
+        full = client.get(
+            path,
+            headers=alice,
+            params={"sort": sort, "paginate": "false", "page": 3, "page_size": 1},
+        ).json()
+        assert [row["id"] for row in full["items"]] == expected_ids
+        assert (full["page"], full["page_size"], full["total"]) == (1, 2, 2)
+        sliced = client.get(
+            path, headers=alice, params={"sort": sort, "page": 2, "page_size": 1}
+        ).json()
+        assert sliced["items"] == full["items"][1:2]
+        assert client.get(
+            path.replace("/11/", "/12/"), headers=alice, params={"paginate": "false"}
+        ).json() == {"items": [], "page": 1, "page_size": 0, "total": 0}
+
+
 def test_session_member_lifecycle_is_scoped_and_regrant_preserves_member_id(client):
     alice = login(client, "13800000001")
     bob = login(client, "13800000002")
@@ -781,6 +914,17 @@ def test_relationship_list_paginates_groups_and_preserves_current_user_direction
 
     for params in ({"page": 0}, {"page_size": 101}):
         assert client.get(url, headers=bob, params=params).status_code == 422
+
+    # [新增] 显式排序保留当前用户方向，且全量返回仍按关系组计数。
+    response = client.get(
+        url,
+        headers=bob,
+        params={"paginate": "false", "page": 3, "page_size": 1, "sort": "name_asc"},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert (result["page"], result["page_size"], result["total"]) == (1, 2, 2)
+    assert [item["relation_code"] for item in result["items"]] == ["other", "child_of"]
 
 
 @pytest.mark.parametrize("legacy_case", ["missing_inverse", "wrong_inverse"])

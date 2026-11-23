@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import MemoryContributor, MemorySession, MemorySessionMember, User
-from app.schemas.memory_contributor import ContributorPage, ContributorResponse
+from app.schemas.memory_contributor import ContributorPage, ContributorResponse, ContributorSort
 from app.services.memory_session_member_service import MemorySessionMemberService
 from app.services.memory_validation_queue import schedule_material_validation
 
@@ -129,18 +129,39 @@ class MemoryContributorService:
         )
 
     def list_contributors(
-        self, db: Session, user: User, session_id: int, page: int, page_size: int
+        self,
+        db: Session,
+        user: User,
+        session_id: int,
+        page: int,
+        page_size: int,
+        *,
+        paginate: bool = True,
+        sort: ContributorSort = "default",
     ) -> ContributorPage:
         memory, _ = self.members.require_manager(db, session_id, user.id, lock=False)
         query = self._records(session_id)
-        total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        rows = db.execute(
+        # [删除-旧] total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        # rows = db.execute(
+        #     query.join(User, User.id == MemoryContributor.account_user_id)
+        #     .add_columns(User)
+        #     .order_by(MemoryContributor.id)
+        #     .offset((page - 1) * page_size)
+        #     .limit(page_size)
+        # ).all()
+        # [新增] 全量和分页都使用相同的会话管理权限和记录范围。
+        ordering = MemoryContributor.id.desc() if sort == "id_desc" else MemoryContributor.id
+        listing = (
             query.join(User, User.id == MemoryContributor.account_user_id)
             .add_columns(User)
-            .order_by(MemoryContributor.id)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        ).all()
+            .order_by(ordering)
+        )
+        if paginate:
+            total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+            listing = listing.offset((page - 1) * page_size).limit(page_size)
+        rows = db.execute(listing).all()
+        if not paginate:
+            page, page_size, total = 1, len(rows), len(rows)
         now = datetime.now(timezone.utc)
         return ContributorPage(
             items=[self._response(db, memory, row, account, now) for row, account in rows],

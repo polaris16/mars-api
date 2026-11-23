@@ -73,14 +73,32 @@ def test_graph_queries_page_nodes_relationships_and_quotations(extraction_api, m
         "precision": "open_range", "origin": "source",
     }
     assert _timeline(client, page=2, page_size=1)["items"] == [right]
+    # [新增] 倒序切页先返回较新的事件。
+    assert _timeline(client, sort="time_desc", page_size=1)["items"] == [right]
+    assert _timeline(client, sort="time_desc", page=2, page_size=1)["items"] == [left]
     assert _timeline(client, from_date="1990-01-01")["items"] == [right]
-    assert client.get(f"{GRAPH}/timeline", headers=OWNER, params={
-        "from_date": "2000-01-01", "to_date": "1999-01-01",
-    }).status_code == 422
-    people = client.get(f"{GRAPH}/entities", headers=OWNER, params={"entity_type": "person", "keyword": "陈师傅"})
+    assert (
+        client.get(
+            f"{GRAPH}/timeline",
+            headers=OWNER,
+            params={
+                "from_date": "2000-01-01",
+                "to_date": "1999-01-01",
+            },
+        ).status_code
+        == 422
+    )
+    people = client.get(
+        f"{GRAPH}/entities", headers=OWNER, params={"entity_type": "person", "keyword": "陈师傅"}
+    )
     assert people.status_code == 200, people.text
     (person,) = people.json()["items"]
     assert person["related_event_count"] == 1
+    entities = client.get(f"{GRAPH}/entities", headers=OWNER).json()["items"]
+    sorted_entities = client.get(
+        f"{GRAPH}/entities", headers=OWNER, params={"sort": "name_desc", "page_size": 1}
+    ).json()
+    assert sorted_entities["total"] >= 2 and sorted_entities["items"] == entities[-1:]
     assert _timeline(client, entity_node_id=person["node_id"])["items"] == [left]
     detail = client.get(f"{GRAPH}/nodes/{left['node_id']}", headers=OWNER)
     assert detail.status_code == 200, detail.text
@@ -94,11 +112,34 @@ def test_graph_queries_page_nodes_relationships_and_quotations(extraction_api, m
     evidence = client.get(f"{GRAPH}/evidence", headers=OWNER, params=before)
     assert evidence.status_code == 200, evidence.text
     assert {item["excerpt"] for item in evidence.json()["items"]} == {first, second}
-    assert all(item["draft_references"][0]["source_references"] for item in evidence.json()["items"])
-    node_proofs = client.get(f"{GRAPH}/evidence", headers=OWNER, params={"node_id": left["node_id"], "page_size": 1})
+    reversed_evidence = client.get(
+        f"{GRAPH}/evidence",
+        headers=OWNER,
+        params={**before, "sort": "evidence_id_desc", "page_size": 1},
+    )
+    assert reversed_evidence.status_code == 200
+    assert reversed_evidence.json()["items"] == evidence.json()["items"][-1:]
+    for suffix, params in (("timeline", {}), ("entities", {}), ("evidence", before)):
+        assert (
+            client.get(
+                f"{GRAPH}/{suffix}", headers=OWNER, params={**params, "paginate": "false"}
+            ).status_code
+            == 422
+        )
+    assert all(
+        item["draft_references"][0]["source_references"] for item in evidence.json()["items"]
+    )
+    node_proofs = client.get(
+        f"{GRAPH}/evidence", headers=OWNER, params={"node_id": left["node_id"], "page_size": 1}
+    )
     assert node_proofs.json()["total"] == left["evidence_count"]
     assert len(node_proofs.json()["items"]) == 1
-    assert client.get(f"{GRAPH}/evidence", headers=OWNER, params={"node_id": left["node_id"], **before}).status_code == 422
+    assert (
+        client.get(
+            f"{GRAPH}/evidence", headers=OWNER, params={"node_id": left["node_id"], **before}
+        ).status_code
+        == 422
+    )
     assert client.get(f"{GRAPH}/timeline").status_code == 401
 
 
@@ -235,5 +276,12 @@ def test_session_graph_keeps_same_named_mentions_and_undated_events_separate(ext
     assert all(node["node_id"].startswith("mention:") and node["related_event_count"] == 1 for node in people)
     known, unknown = _timeline(client, session_id=11)["items"]
     assert unknown["time"]["precision"] == "unknown"
+    assert _timeline(client, session_id=11, sort="time_desc")["items"] == [known, unknown]
+    descending_people = client.get(
+        f"{GRAPH}/entities", headers=OWNER, params={"session_id": 11, "sort": "name_desc"}
+    )
+    assert descending_people.json()["items"] == people
     assert _timeline(client, session_id=11, from_date="1980-01-01")["items"] == [known]
-    assert _timeline(client, session_id=11, from_date="1980-01-01", include_undated=True)["items"] == [known, unknown]
+    assert _timeline(client, session_id=11, from_date="1980-01-01", include_undated=True)[
+        "items"
+    ] == [known, unknown]

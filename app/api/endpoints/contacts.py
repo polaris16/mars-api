@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, bearer_scheme
+from app.api.dependencies import CurrentUser, PaginateOnly, bearer_scheme
 from app.db.database import get_db
+from app.schemas.list_sort import CreatedAtSort
 from app.schemas.user_relationship import (
     ContactCodeResponse,
     ContactListResponse,
@@ -20,6 +21,7 @@ from app.schemas.user_relationship import (
     ContactView,
     RelationshipCreateRequest,
     RelationshipRecordResponse,
+    RelationshipSort,
 )
 from app.services.contact_invitation_service import ContactInvitationService
 from app.services.user_relationship_service import UserRelationshipService
@@ -40,8 +42,18 @@ def list_contacts(
     page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     keyword: Annotated[str | None, Query(max_length=100)] = None,
+    # [新增] 有效联系人支持全量查询和显式昵称排序。
+    paginate: Annotated[bool, Query(description="仅 active 视图可以设为 false")] = True,
+    sort: Annotated[
+        RelationshipSort, Query(description="仅 active 视图支持显式昵称排序，默认昵称升序")
+    ] = "default",
 ):
-    return relationships.list_contacts(db, user.id, view, page, page_size, keyword)
+    # [删除-旧] return relationships.list_contacts(db, user.id, view, page, page_size, keyword)
+    if view != "active" and (not paginate or sort != "default"):
+        raise HTTPException(status_code=422, detail="仅有效联系人支持全量查询和指定排序")
+    return relationships.list_contacts(
+        db, user.id, view, page, page_size, keyword, paginate=paginate, sort=sort
+    )
 
 
 # [新增] 搜索候选和申请历史独立于已有联系人列表。
@@ -61,8 +73,13 @@ def list_contact_requests(
     status: ContactRequestStatus | None = None,
     page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    paginate: PaginateOnly = True,
+    sort: CreatedAtSort = "default",
 ):
-    return relationships.list_contact_requests(db, user.id, direction, status, page, page_size)
+    # [删除-旧] return relationships.list_contact_requests(db, user.id, direction, status, page, page_size)
+    return relationships.list_contact_requests(
+        db, user.id, direction, status, page, page_size, sort=sort
+    )
 
 
 @router.post("/invite-code", response_model=ContactCodeResponse, summary="获取我的联系人邀请码")

@@ -11,9 +11,16 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.models import (
-    AIProcessingJob, MediaAsset, MemoryContributor, MemoryDraftVersion, MemoryElement,
-    MemoryFragment, MemorySourceRevision, User,
+    AIProcessingJob,
+    MediaAsset,
+    MemoryContributor,
+    MemoryDraftVersion,
+    MemoryElement,
+    MemoryFragment,
+    MemorySourceRevision,
+    User,
 )
+from app.schemas.list_sort import IdSort
 from app.schemas.memory_extraction import ExtractionRequest
 from app.schemas.memory_processing import (
     DraftVersionCreate, NarrationInput, ProcessingJobCreate, TranscriptSegment,
@@ -498,16 +505,26 @@ class MemoryPipelineService:
             ]
         return result
 
-    def list_drafts(self, db, user, session_id, fragment_id, page, page_size) -> dict:
+    def list_drafts(
+        self, db, user, session_id, fragment_id, page, page_size, *, sort: IdSort = "default"
+    ) -> dict:
         self._fragment(db, user, session_id, fragment_id)
-        query = select(MemoryDraftVersion, MemorySourceRevision).join(MemorySourceRevision).where(
-            MemorySourceRevision.fragment_id == fragment_id, MemorySourceRevision.is_del.is_(False),
-            MemoryDraftVersion.is_del.is_(False),
+        query = (
+            select(MemoryDraftVersion, MemorySourceRevision)
+            .join(MemorySourceRevision)
+            .where(
+                MemorySourceRevision.fragment_id == fragment_id,
+                MemorySourceRevision.is_del.is_(False),
+                MemoryDraftVersion.is_del.is_(False),
+            )
         )
         current = current_source(db, fragment_id)
         active = active_draft(db, current.id) if current else None
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        rows = db.execute(query.order_by(MemoryDraftVersion.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        # [删除-旧] rows = db.execute(query.order_by(MemoryDraftVersion.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        # [新增] 不同原文版本下的稿件仍按全局 ID 排列。
+        ordering = MemoryDraftVersion.id if sort == "id_asc" else MemoryDraftVersion.id.desc()
+        rows = db.execute(query.order_by(ordering).offset((page - 1) * page_size).limit(page_size))
         return {
             "items": [self._draft_response(draft, source) for draft, source in rows],
             "page": page, "page_size": page_size, "total": total,

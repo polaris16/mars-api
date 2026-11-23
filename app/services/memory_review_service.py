@@ -16,6 +16,7 @@ from app.models import (
     MemoryValidationJob,
     User,
 )
+from app.schemas.list_sort import IdSort
 from app.schemas.memory_review import ReviewAnswerCreate, ValidationJobCreate
 from app.services.memory_validation_queue import enqueue, lock_owner
 
@@ -141,6 +142,8 @@ class MemoryReviewService:
         page_size: int,
         status: str,
         session_id: int | None,
+        *,
+        sort: IdSort = "default",
     ) -> dict:
         owner_id = user.id
         if (
@@ -156,7 +159,10 @@ class MemoryReviewService:
         ):
             raise HTTPException(404, "会话不存在")
         query = self._questions(owner_id).where(MemoryReviewQuestion.status == status)
-        questions = list(db.execute(query.order_by(MemoryReviewQuestion.id.desc())))
+        # [删除-旧] questions = list(db.execute(query.order_by(MemoryReviewQuestion.id.desc())))
+        # [新增] 保留问题顺序，筛完可见证据后再切页。
+        ordering = MemoryReviewQuestion.id if sort == "id_asc" else MemoryReviewQuestion.id.desc()
+        questions = list(db.execute(query.order_by(ordering)))
         if not questions:
             return {"page": page, "page_size": page_size, "total": 0, "items": []}
         # [删除-旧] evidence = self._evidence(db, questions, current_records(db, owner_id))

@@ -18,7 +18,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, PaginateOnly
 from app.db.database import get_db
 from app.models import MemoryFragment, MemorySession, User
 from app.schemas.attachment_upload import (
@@ -29,6 +29,7 @@ from app.schemas.attachment_upload import (
 )
 from app.schemas.memory import (
     PG_BIGINT_MAX,
+    AssetSort,
     AttachmentBatchCreate,
     AttachmentPatch,
     AttachmentResponse,
@@ -39,12 +40,14 @@ from app.schemas.memory import (
     FragmentPatch,
     FragmentRawTranscriptUpdate,
     FragmentResponse,
+    FragmentSort,
     MediaAssetPage,
     MediaAssetResponse,
     SessionCreate,
     SessionDetail,
     SessionPage,
     SessionPatch,
+    SessionSort,
     SessionSummary,
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
@@ -104,9 +107,11 @@ def list_sessions(
     service: Annotated[MemoryService, Depends(MemoryService)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
-    sort: Literal["last_recorded_at", "created_at"] = "last_recorded_at",
+    # [删除-旧] sort: Literal["last_recorded_at", "created_at"] = "last_recorded_at",
+    sort: SessionSort = "default",
     order: Literal["asc", "desc"] = "desc",
     is_favorite: bool | None = None,
+    paginate: PaginateOnly = True,
 ):
     return service.list_sessions(db, user, page, page_size, sort, order, is_favorite)
 
@@ -197,8 +202,11 @@ def list_assets(
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     purpose: Literal["recording", "source", "attachment"] | None = None,
     media_type: Literal["audio", "image", "video", "text"] | None = None,
+    paginate: PaginateOnly = True,
+    sort: AssetSort = "default",
 ):
-    return service.list_assets(db, user, page, page_size, purpose, media_type, storage)
+    # [删除-旧] return service.list_assets(db, user, page, page_size, purpose, media_type, storage)
+    return service.list_assets(db, user, page, page_size, purpose, media_type, storage, sort=sort)
 
 
 @router.get(
@@ -333,8 +341,11 @@ def list_fragments(
     storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    paginate: PaginateOnly = True,
+    sort: FragmentSort = "default",
 ):
-    return service.list_fragments(db, user, session_id, page, page_size, storage)
+    # [删除-旧] return service.list_fragments(db, user, session_id, page, page_size, storage)
+    return service.list_fragments(db, user, session_id, page, page_size, storage, sort=sort)
 
 
 @router.get(

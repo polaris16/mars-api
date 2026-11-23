@@ -9,9 +9,18 @@ NodeId = Annotated[
     str, StringConstraints(pattern=r"^(event|entity|element|mention):[1-9][0-9]{0,18}$")
 ]
 EntityType = Literal["person", "place", "organization", "time_period"]
+# [新增] 时间线支持按时间方向查看，证据支持按公开证据标识排序。
+TimelineSort = Literal["default", "time_asc", "time_desc"]
+GraphEvidenceSort = Literal["default", "evidence_id_asc", "evidence_id_desc"]
 Relation = Literal[
-    "subject", "participant", "location", "departure_location", "destination_location",
-    "mentioned", "time_period", "before",
+    "subject",
+    "participant",
+    "location",
+    "departure_location",
+    "destination_location",
+    "mentioned",
+    "time_period",
+    "before",
 ]
 
 

@@ -16,6 +16,7 @@ from app.models import (
     MemorySession,
     User,
 )
+from app.schemas.benefits import BenefitOrderSort
 from app.services.benefit_common import (
     BenefitError,
     BenefitKeys,
@@ -199,6 +200,7 @@ class BenefitOrderService:
         start_from=None,
         start_before=None,
         order_id=None,
+        sort: BenefitOrderSort = "default",
     ):
         with ctx.db.begin():
             stmt, _ = self.access_scope(ctx, self.order_statement(), fulfill=fulfill)
@@ -217,9 +219,25 @@ class BenefitOrderService:
                 stmt = stmt.where(BenefitServiceOrder.scheduled_start_at >= start_from)
             if start_before is not None:
                 stmt = stmt.where(BenefitServiceOrder.scheduled_start_at < start_before)
+            # [新增] 预约列表将尚未分配预约时间的订单放在最后。
+            order = BenefitServiceOrder
+            ordering = {
+                "default": (order.id.desc(),),
+                "created_at_asc": (order.created_at.asc(), order.id.desc()),
+                "created_at_desc": (order.created_at.desc(), order.id.desc()),
+                "scheduled_start_at_asc": (
+                    order.scheduled_start_at.asc().nulls_last(),
+                    order.id.desc(),
+                ),
+                "scheduled_start_at_desc": (
+                    order.scheduled_start_at.desc().nulls_last(),
+                    order.id.desc(),
+                ),
+            }[sort]
             return paginate(
                 ctx.db,
-                stmt.order_by(BenefitServiceOrder.id.desc()),
+                # [删除-旧] stmt.order_by(BenefitServiceOrder.id.desc()),
+                stmt.order_by(*ordering),
                 page,
                 size,
                 lambda row: self.view(row, ctx.db.get(BenefitBalance, row.balance_id)),

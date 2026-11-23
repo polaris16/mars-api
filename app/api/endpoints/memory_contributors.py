@@ -5,13 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser
+from app.api.dependencies import CurrentUser, Paginate
 from app.db.database import get_db
 from app.schemas.memory_contributor import (
     ContributorConsentRequest,
     ContributorPage,
     ContributorRegisterRequest,
     ContributorResponse,
+    ContributorSort,
 )
 from app.services.memory_contributor_service import MemoryContributorService
 
@@ -31,8 +32,13 @@ def list_contributors(
     service: ContributorService,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    paginate: Paginate = True,
+    sort: ContributorSort = "default",
 ) -> ContributorPage:
-    return service.list_contributors(db, user, session_id, page, page_size)
+    # [删除-旧] return service.list_contributors(db, user, session_id, page, page_size)
+    return service.list_contributors(
+        db, user, session_id, page, page_size, paginate=paginate, sort=sort
+    )
 
 
 @router.post(

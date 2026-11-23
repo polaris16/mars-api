@@ -5,7 +5,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models import InterestDomain, Topic, TopicInterest, TopicParticipant, User, UserInterest
-from app.schemas.topic import TopicCardResponse, TopicRecommendationResponse
+from app.schemas.topic import (
+    TopicCardResponse,
+    TopicRecommendationResponse,
+    TopicRecommendationSort,
+)
 
 
 class TopicService:
@@ -62,6 +66,9 @@ class TopicService:
         user: User,
         page: int,
         page_size: int,
+        *,
+        paginate: bool = True,
+        sort: TopicRecommendationSort = "default",
     ) -> TopicRecommendationResponse:
         """分页读取兴趣匹配话题及通用话题，兴趣话题优先展示。"""
         interest_match = self._interest_match(user.id)
@@ -71,7 +78,7 @@ class TopicService:
             or_(interest_match, Topic.is_general.is_(True)),
         )
 
-        total = session.scalar(select(func.count(Topic.id)).where(*available_topic_filter)) or 0
+        # [删除-旧] total = session.scalar(select(func.count(Topic.id)).where(*available_topic_filter)) or 0
 
         is_interest_source = case(
             (interest_match, 0),
@@ -81,18 +88,37 @@ class TopicService:
             (interest_match, literal("interest")),
             else_=literal("general"),
         ).label("recommendation_source")
-        rows = session.execute(
+        # [删除-旧] rows = session.execute(
+        #     select(Topic, source)
+        #     .where(*available_topic_filter)
+        #     .order_by(
+        #         is_interest_source.asc(),
+        #         Topic.participant_count.desc(),
+        #         Topic.sort_order.asc(),
+        #         Topic.id.asc(),
+        #     )
+        #     .offset((page - 1) * page_size)
+        #     .limit(page_size)
+        # ).all()
+        # [新增] 组内排序后的同值结果继续按配置顺序和 ID 排列。
+        sort_key = {
+            "default": Topic.participant_count.desc(),
+            "participant_count_asc": Topic.participant_count.asc(),
+            "participant_count_desc": Topic.participant_count.desc(),
+            "title_asc": func.lower(Topic.title).asc(),
+            "title_desc": func.lower(Topic.title).desc(),
+        }[sort]
+        query = (
             select(Topic, source)
             .where(*available_topic_filter)
-            .order_by(
-                is_interest_source.asc(),
-                Topic.participant_count.desc(),
-                Topic.sort_order.asc(),
-                Topic.id.asc(),
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        ).all()
+            .order_by(is_interest_source.asc(), sort_key, Topic.sort_order.asc(), Topic.id.asc())
+        )
+        if paginate:
+            total = session.scalar(select(func.count(Topic.id)).where(*available_topic_filter)) or 0
+            rows = session.execute(query.offset((page - 1) * page_size).limit(page_size))
+        else:
+            rows = session.execute(query).all()
+            page, page_size, total = 1, len(rows), len(rows)
 
         items = [
             TopicCardResponse(

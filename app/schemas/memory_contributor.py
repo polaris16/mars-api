@@ -5,6 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# [新增] 提供者可按登记 ID 排序。
+ContributorSort = Literal["default", "id_asc", "id_desc"]
+
 
 class ContributorRegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
