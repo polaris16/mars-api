@@ -8,6 +8,7 @@ __pycache__/
 .env.*
 !.env.example
 .local-media/
+/logs/
 .DS_Store
 *.egg-info/
 build/

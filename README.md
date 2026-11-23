@@ -77,6 +77,30 @@ curl http://127.0.0.1:8000/api/health
 | `GET` | `/api/health` | 应用存活检查，不访问数据库 |
 | `GET` | `/api/users` | 查询 `t_user` 全部记录，按 `id` 升序排列 |
 
+### 启用 HTTP 访问日志
+
+在项目根目录打开 PowerShell，创建日志目录并用 [logging.json](logging.json) 启动 Uvicorn。
+
+```powershell
+New-Item -ItemType Directory -Path .\logs -Force | Out-Null
+uv run uvicorn app.main:app --log-config .\logging.json
+```
+
+在另一个 PowerShell 终端请求健康检查并实时查看日志。按 Ctrl+C 结束查看。
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+Get-Content .\logs\access.log -Tail 20 -Wait
+```
+
+查找当前日志及轮转备份中的好友确认请求。
+
+```powershell
+Select-String -Path .\logs\access.log* -Pattern 'POST /api/users/me/relationships/\d+/accept'
+```
+
+访问日志记录服务器本地时间、客户端地址、请求行和 HTTP 状态码。单个日志文件接近 10 MiB 时轮转，最多保留 5 个备份。服务启动和错误日志显示在启动终端。请求行包含查询字符串和路径中的 Mock 存储签名令牌。应用层用户 ID 无法从该日志读取。生成的 `logs/` 目录由 Git 忽略。
+
 ## 数据库配置
 
 在 `.env` 中配置现有 PostgreSQL 数据库连接及连接池参数：
