@@ -613,6 +613,10 @@ class UserRelationshipService:
             row.status = "active"
             row.accepted_at = now
             row.valid_from = now
+            # [新增] 好友确认后不再沿用申请截止时间，旧入口的期限只约束等待确认。
+            if row.relationship_type == "contact":
+                row.invitation_expires_at = None
+                row.valid_until = None
             row.updated_at = now
             row.updated_by = user.id
             result = [row]

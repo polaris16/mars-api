@@ -4,11 +4,16 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from sqlalchemy import select
 
 from app.db.database import get_db
 from app.main import app
-from app.models import User, UserRelationship
+from app.models import MemorySessionMember, User, UserRelationship
+from app.services import user_relationship_service
 from test_memory_extraction import (
     FRAGMENTS,
     OUTSIDER,
@@ -24,6 +29,74 @@ CONTACTS = "/api/users/me/contacts"
 CONTACT_SEARCH = f"{CONTACTS}/search"
 CONTACT_REQUESTS = f"{CONTACTS}/requests"
 
+
+# [新增] 旧入口的有效期可以缩短等待时间，接受后好友双方均无期限。
+def test_confirmed_contacts_outlive_invitation_deadline(client, monkeypatch):
+    class Clock(datetime):
+        current = datetime(2026, 11, 24, 8, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr(user_relationship_service, "datetime", Clock)
+    alice = login(client, "13800000001")
+    bob = login(client, "13800000002")
+    deadline = Clock.current + timedelta(hours=1)
+    pending = client.post(
+        RELATIONSHIPS,
+        headers=alice,
+        json={
+            "related_user_id": 2,
+            "relationship_type": "contact",
+            "relation_code": "contact_of",
+            "valid_until": deadline.isoformat(),
+        },
+    )
+    assert pending.status_code == 201, pending.text
+    row = pending.json()
+    assert row["invitation_expires_at"] is not None
+    accepted = client.post(f"{RELATIONSHIPS}/{row['id']}/accept", headers=bob)
+    assert accepted.status_code == 200, accepted.text
+    assert len(accepted.json()) == 2
+    for member in accepted.json():
+        assert member["invitation_expires_at"] is None
+        assert member["valid_until"] is None
+        assert member["accepted_at"] is not None
+    Clock.current = deadline + timedelta(days=8)
+    assert client.get(CONTACTS, headers=alice).json()["total"] == 1
+    assert client.get(CONTACTS, headers=bob).json()["total"] == 1
+    history = client.get(f"{CONTACT_REQUESTS}?direction=outgoing", headers=alice).json()
+    assert history["items"][0]["status"] == "accepted"
+    revoked = client.post(f"{RELATIONSHIPS}/{row['id']}/revoke", headers=alice)
+    assert revoked.status_code == 200, revoked.text
+    assert client.get(CONTACTS, headers=bob).json()["total"] == 0
+
+
+# [新增] 执行历史数据迁移，好友恢复时不得延长记忆授权。
+def test_permanent_contacts_migration_preserves_grant_deadline(client):
+    alice = login(client, "13800000001")
+    bob = login(client, "13800000002")
+    relation_id = confirm_relationship(
+        client, alice, bob, user_id=2, kind="contact", code="contact_of"
+    )
+    deadline = datetime.now(timezone.utc) - timedelta(days=1)
+    migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261124_01")
+    with contextmanager(app.dependency_overrides[get_db])() as db, db.begin():
+        original = db.get(UserRelationship, relation_id)
+        original.valid_until = deadline
+        original.invitation_expires_at = deadline
+        db.add(MemorySessionMember(
+            session_id=11, user_id=2, role="viewer", status="active",
+            source_relationship_id=relation_id, granted_by_user_id=1,
+        ))
+        db.flush()
+        with Operations.context(MigrationContext.configure(db.connection())):
+            migration.module.upgrade()
+        db.expire_all()
+        assert db.scalar(select(MemorySessionMember)).valid_until == deadline.replace(tzinfo=None)
+        assert original.valid_until is None and original.invitation_expires_at is None
+    assert client.get(CONTACTS, headers=alice).json()["total"] == 1
 
 # [新增] 两种列表均支持与分页结果一致的全局排序，并可一次返回超过 100 项。
 def test_friend_and_relationship_lists_support_sorted_full_results(client):
