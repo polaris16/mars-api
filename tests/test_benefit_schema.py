@@ -77,8 +77,13 @@ def test_benefit_migration_adds_only_new_tables_and_integrity_checks():
         table = Base.metadata.tables[name]
         assert f"COMMENT ON TABLE {name} IS '{table.comment}'" in sql
         for column in table.columns:
+            # 线上处理器字段由后续产品体验迁移创建。
+            if (name, column.name) == ("t_benefit_service_version", "online_handler"):
+                continue
             assert f"COMMENT ON COLUMN {name}.{column.name} IS '{column.comment}'" in sql
         for constraint in table.constraints:
+            if constraint.name == "ck_benefit_service_version_online_handler":
+                continue
             if constraint.name is not None:
                 assert f"CONSTRAINT {constraint.name} " in sql
         for index in table.indexes:

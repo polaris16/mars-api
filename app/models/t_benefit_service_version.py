@@ -26,6 +26,12 @@ class BenefitServiceVersion(AuditFields, Base):
             "fulfillment_mode IN ('online', 'appointment')",
             name="ck_benefit_service_version_fulfillment",
         ),
+        # [新增] 线上版本可以绑定已接入的履约能力。
+        CheckConstraint(
+            "online_handler IS NULL OR "
+            "(fulfillment_mode = 'online' AND online_handler = 'product_experience')",
+            name="ck_benefit_service_version_online_handler",
+        ),
         CheckConstraint(
             "status IN ('draft', 'published', 'retired')", name="ck_benefit_service_version_status"
         ),
@@ -53,6 +59,7 @@ class BenefitServiceVersion(AuditFields, Base):
     fulfillment_mode = Column(
         String(20), nullable=False, comment="履约方式：online 线上，appointment 预约"
     )
+    online_handler = Column(String(50), comment="线上履约能力编码，如 product_experience")
     status = Column(
         String(20),
         nullable=False,

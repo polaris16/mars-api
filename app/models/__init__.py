@@ -54,6 +54,16 @@ from app.models.t_benefit_balance import BenefitBalance
 from app.models.t_benefit_service_order import BenefitServiceOrder
 from app.models.t_benefit_order_event import BenefitOrderEvent
 
+# [新增] 产品目录、生成预览、作品和好友分享模型。
+from app.models.t_product_category import ProductCategory
+from app.models.t_product import Product
+from app.models.t_product_version import ProductVersion
+from app.models.t_product_image import ProductImage
+from app.models.t_product_experience_round import ProductExperienceRound
+from app.models.t_product_experience_preview import ProductExperiencePreview
+from app.models.t_product_experience_result import ProductExperienceResult
+from app.models.t_product_experience_share import ProductExperienceShare
+
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
 # 将录音与媒体模型注册到公开导出列表。
@@ -108,4 +118,13 @@ __all__ = [
     "BenefitBalance",
     "BenefitServiceOrder",
     "BenefitOrderEvent",
+    # [新增] 产品体验模型。
+    "ProductCategory",
+    "Product",
+    "ProductVersion",
+    "ProductImage",
+    "ProductExperienceRound",
+    "ProductExperiencePreview",
+    "ProductExperienceResult",
+    "ProductExperienceShare",
 ]

@@ -48,6 +48,8 @@ from app.services.user_relationship_service import UserRelationshipService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
 CONFIRMED_UPLOAD_STATES = {"uploaded", "attached"}
+# [新增] 录音与素材入口只读取回忆录用途，产品体验由独立入口鉴权。
+MEMORY_MEDIA_PURPOSES = ("recording", "source", "attachment")
 
 
 class UploadItemError(HTTPException):
@@ -235,6 +237,7 @@ class MemoryService:
         query = select(MediaAsset).where(
             MediaAsset.id == asset_id,
             MediaAsset.uploaded_by_user_id == user_id,
+            MediaAsset.purpose.in_(MEMORY_MEDIA_PURPOSES),
             MediaAsset.is_del.is_(False),
         )
         if lock:
@@ -1612,6 +1615,7 @@ class MemoryService:
     ) -> dict:
         filters = [
             MediaAsset.uploaded_by_user_id == user.id,
+            MediaAsset.purpose.in_(MEMORY_MEDIA_PURPOSES),
             MediaAsset.is_del.is_(False),
             MediaAsset.upload_status.in_(["uploaded", "attached"]),
         ]

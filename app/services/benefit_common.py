@@ -18,9 +18,11 @@ from app.models import BenefitStaff, Enterprise, EnterpriseMember, User
 
 
 class BenefitError(HTTPException):
-    def __init__(self, status: int, code: str, detail: str):
+    def __init__(self, status: int, code: str, detail: str, *, extra: dict | None = None):
         super().__init__(status_code=status, detail=detail)
         self.code = code
+        # [新增] 部分业务拒绝同时返回可直接用于界面更新的计数。
+        self.extra = extra or {}
 
 
 def conflict(code: str, detail: str) -> BenefitError:

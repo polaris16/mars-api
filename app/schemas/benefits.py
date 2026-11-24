@@ -92,6 +92,13 @@ class ServiceVersionInput(BenefitInput):
     terms_ref: DocumentRef
     delivery_terms: Annotated[str, StringConstraints(min_length=1, max_length=5000)]
     fulfillment_mode: Literal["online", "appointment"]
+    online_handler: Literal["product_experience"] | None = None
+
+    @model_validator(mode="after")
+    def validate_online_handler(self):
+        if self.online_handler is not None and self.fulfillment_mode != "online":
+            raise ValueError("线上履约处理器仅适用于线上服务")
+        return self
 
 
 class PackageItemInput(BenefitInput):
@@ -273,6 +280,7 @@ class BenefitCardView(BaseModel):
     description_ref: str
     terms_ref: str
     fulfillment_mode: Literal["online", "appointment"]
+    online_handler: Literal["product_experience"] | None = None
     valid_from: datetime
     valid_until: datetime
     display_timezone: str

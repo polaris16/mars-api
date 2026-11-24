@@ -390,7 +390,10 @@ class BenefitGrantService:
             "service_code": service.code,
             "service_version_id": version.id,
             "icon_key": item.icon_key,
-            **display(version, "name summary description_ref terms_ref fulfillment_mode"),
+            # [删除-旧] **display(version, "name summary description_ref terms_ref fulfillment_mode"),
+            **display(
+                version, "name summary description_ref terms_ref fulfillment_mode online_handler"
+            ),
             **display(grant, "valid_from valid_until"),
             "display_timezone": batch.display_timezone,
             **display(balance, "granted_count reserved_count used_count"),

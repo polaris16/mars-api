@@ -91,7 +91,7 @@ def send(client, method, url, headers, body=None, expected=200, key=None):
     return result.json()
 
 
-def configure(benefits, units=2, *, different_description=False):
+def configure(benefits, units=2, *, different_description=False, online=False):
     client, root = benefits
     platform = login(client, "13800000001")
     customer = login(client, "13800000002")
@@ -122,6 +122,9 @@ def configure(benefits, units=2, *, different_description=False):
         "delivery_terms": "一次陪聊完成即交付",
         "fulfillment_mode": "appointment",
     }
+    # [新增] 线上产品体验走同一采购、发放和领取流程。
+    if online:
+        version_body.update(fulfillment_mode="online", online_handler="product_experience")
     version = send(client, "POST", service_base, platform, version_body, 201)
     version_path = f"{service_base}/{version['id']}"
     send(client, "POST", f"{version_path}/publish", platform)

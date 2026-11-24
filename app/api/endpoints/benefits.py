@@ -71,7 +71,8 @@ class BenefitRoute(APIRoute):
                 response = await handle(request)
             except BenefitError as exc:
                 response = JSONResponse(
-                    {"code": exc.code, "detail": exc.detail},
+                    # [删除-旧] {"code": exc.code, "detail": exc.detail},
+                    {**exc.extra, "code": exc.code, "detail": exc.detail},
                     status_code=exc.status_code,
                 )
             except RequestValidationError as exc:

@@ -180,6 +180,16 @@ class BenefitOrderService:
     def access_scope(ctx, stmt, *, fulfill):
         if not fulfill:
             return stmt.where(BenefitGrant.recipient_user_id == ctx.actor_id), set()
+        # [新增] 派单入口只管理预约式履约，线上作品留在用户的权益记录。
+        appointment = (
+            select(BenefitPackageItem.id)
+            .join(
+                BenefitServiceVersion,
+                BenefitServiceVersion.id == BenefitPackageItem.service_version_id,
+            )
+            .where(BenefitServiceVersion.fulfillment_mode == "appointment")
+        )
+        stmt = stmt.where(BenefitBalance.package_item_id.in_(appointment))
         roles = ctx.platform_roles()
         if "dispatcher" in roles:
             return stmt, roles

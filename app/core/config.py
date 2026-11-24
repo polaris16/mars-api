@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     object_storage_max_image_bytes: int = Field(default=20971520, gt=0)
     object_storage_max_video_bytes: int = Field(default=524288000, gt=0)
     object_storage_max_text_bytes: int = Field(default=5242880, gt=0)
+    # [新增] Mock 用于产品体验联调，正式环境默认关闭生成。
+    product_experience_provider: Literal["disabled", "mock"] = "disabled"
 
     # Only the text model is used by Stage 2. The other model groups remain examples.
     ai_text_enabled: bool = False

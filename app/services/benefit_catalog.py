@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from sqlalchemy import func, select
 
+from app.core.config import get_settings
 from app.models import (
     BenefitBatchContact,
     BenefitGrant,
@@ -48,7 +49,8 @@ ENTERPRISE_FIELDS = "id code display_name icon_url status"
 MEMBER_FIELDS = "id enterprise_id user_id role status work_display_name work_title work_phone"
 VERSION_FIELDS = (
     "id service_id version_no name summary description_ref terms_ref delivery_terms "
-    "fulfillment_mode status published_at"
+    # [删除-旧] "fulfillment_mode status published_at"
+    "fulfillment_mode online_handler status published_at"
 )
 PACKAGE_FIELDS = "id package_code version_no title description icon_url status published_at"
 ITEM_FIELDS = "id service_version_id quota_per_unit icon_key sort_order"
@@ -615,7 +617,15 @@ class BenefitCatalogService:
             service = services[version.service_id]
             if version.status != "published" or service.status != "active":
                 raise conflict("benefit_service_unavailable", "权益包含未发布或已停用的服务版本")
-            if supported and version.fulfillment_mode != "appointment":
+            # [删除-旧] if supported and version.fulfillment_mode != "appointment":
+            if (
+                supported
+                and version.fulfillment_mode != "appointment"
+                and not (
+                    version.online_handler == "product_experience"
+                    and get_settings().product_experience_provider != "disabled"
+                )
+            ):
                 raise conflict(
                     "benefit_fulfillment_unavailable", "该计划包含暂未接入的线上履约服务"
                 )
