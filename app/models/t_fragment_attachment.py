@@ -23,15 +23,7 @@ class FragmentAttachment(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_fragment_attachment_pkey"),
         CheckConstraint("sort_order >= 0", name="ck_t_fragment_attachment_sort_order"),
-        # [删除-旧] 同一片段的有效附件只能关联同一个文件一次。
-        # Index(
-        #     "uq_t_fragment_attachment_active_asset",
-        #     "fragment_id",
-        #     "media_asset_id",
-        #     unique=True,
-        #     postgresql_where=text("is_del = false"),
-        # ),
-        # [新增] 每条附件关联可以独立保留，软删除后仍保留其操作标识。
+        # 每条附件关联可以独立保留，软删除后仍保留其操作标识。
         CheckConstraint(
             "client_file_id IS NULL OR created_by IS NOT NULL",
             name="ck_t_fragment_attachment_client_file_creator",
@@ -71,7 +63,7 @@ class FragmentAttachment(Base):
         nullable=False,
         comment="媒体对象ID",
     )
-    # [新增] 附件的提供者记录在关联表，不放在可被多人复用的文件对象上。
+    # 附件的提供者记录在关联表，不放在可被多人复用的文件对象上。
     contributor_id = Column(
         BigInteger,
         ForeignKey(
@@ -82,7 +74,7 @@ class FragmentAttachment(Base):
         nullable=False,
         comment="添加附件的提供者ID",
     )
-    # [新增] 兼容没有操作标识的历史附件和既有创建流程。
+    # 兼容没有操作标识的历史附件和既有创建流程。
     client_file_id = Column(
         UUID(as_uuid=True), nullable=True, comment="客户端新建附件关联的操作标识"
     )

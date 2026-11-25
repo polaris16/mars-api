@@ -75,7 +75,6 @@ def list_drafts(
     paginate: PaginateOnly = True,
     sort: IdSort = "default",
 ):
-    # [删除-旧] return service.list_drafts(db, user, session_id, fragment_id, page, page_size)
     return service.list_drafts(db, user, session_id, fragment_id, page, page_size, sort=sort)
 
 
@@ -113,7 +112,6 @@ def list_entities(
     paginate: PaginateOnly = True,
     sort: NameSort = "default",
 ):
-    # [删除-旧] return service.list_entities(db, user, session_id, page, page_size, entity_type, element_id)
     return service.list_entities(
         db, user, session_id, page, page_size, entity_type, element_id, sort=sort
     )
@@ -136,7 +134,6 @@ def list_candidates(
     paginate: PaginateOnly = True,
     sort: IdSort = "default",
 ):
-    # [删除-旧] return service.list_candidates(db, user, session_id, page, page_size, element_id)
     return service.list_candidates(db, user, session_id, page, page_size, element_id, sort=sort)
 
 

@@ -88,19 +88,7 @@ class TopicService:
             (interest_match, literal("interest")),
             else_=literal("general"),
         ).label("recommendation_source")
-        # [删除-旧] rows = session.execute(
-        #     select(Topic, source)
-        #     .where(*available_topic_filter)
-        #     .order_by(
-        #         is_interest_source.asc(),
-        #         Topic.participant_count.desc(),
-        #         Topic.sort_order.asc(),
-        #         Topic.id.asc(),
-        #     )
-        #     .offset((page - 1) * page_size)
-        #     .limit(page_size)
-        # ).all()
-        # [新增] 组内排序后的同值结果继续按配置顺序和 ID 排列。
+        # 组内排序后的同值结果继续按配置顺序和 ID 排列。
         sort_key = {
             "default": Topic.participant_count.desc(),
             "participant_count_asc": Topic.participant_count.asc(),

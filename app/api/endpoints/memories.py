@@ -107,7 +107,6 @@ def list_sessions(
     service: Annotated[MemoryService, Depends(MemoryService)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
-    # [删除-旧] sort: Literal["last_recorded_at", "created_at"] = "last_recorded_at",
     sort: SessionSort = "default",
     order: Literal["asc", "desc"] = "desc",
     is_favorite: bool | None = None,
@@ -205,7 +204,6 @@ def list_assets(
     paginate: PaginateOnly = True,
     sort: AssetSort = "default",
 ):
-    # [删除-旧] return service.list_assets(db, user, page, page_size, purpose, media_type, storage)
     return service.list_assets(db, user, page, page_size, purpose, media_type, storage, sort=sort)
 
 
@@ -344,7 +342,6 @@ def list_fragments(
     paginate: PaginateOnly = True,
     sort: FragmentSort = "default",
 ):
-    # [删除-旧] return service.list_fragments(db, user, session_id, page, page_size, storage)
     return service.list_fragments(db, user, session_id, page, page_size, storage, sort=sort)
 
 
@@ -428,7 +425,7 @@ def delete_fragment(
     return {"id": fragment_id, "deleted": True}
 
 
-# [新增] 批量上传专用于一个已有片段的附件。
+# 批量上传专用于一个已有片段的附件。
 @router.post(
     "/memory-fragments/{fragment_id}/attachments/batch-upload-authorizations",
     response_model=AttachmentUploadBatchResponse,

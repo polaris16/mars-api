@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 from app.api.endpoints.auth import router as auth_router
-from app.api.endpoints.benefits import router as benefits_router  # [新增] 企业权益
-from app.api.endpoints.contacts import router as contacts_router  # [新增] App 联系人入口
+from app.api.endpoints.benefits import router as benefits_router  # 企业权益
+from app.api.endpoints.contacts import router as contacts_router  # App 联系人入口
 from app.api.endpoints.health import router as health_router
 from app.api.endpoints.interests import router as interests_router
 from app.api.endpoints.topics import router as topics_router
@@ -12,9 +12,7 @@ from app.api.endpoints.user_relationships import router as user_relationships_ro
 from app.api.endpoints.memories import router as memories_router
 from app.api.endpoints.memory_extraction import router as memory_extraction_router
 from app.api.endpoints.memory_processing import router as memory_processing_router
-# [新增] 第四阶段回忆录核对接口。
 from app.api.endpoints.memory_review import router as memory_review_router
-# [新增] 第五阶段图谱只读接口。
 from app.api.endpoints.memory_graph import router as memory_graph_router
 from app.api.endpoints.memory_contributors import router as memory_contributors_router
 from app.api.endpoints.memory_session_members import router as memory_session_members_router
@@ -32,8 +30,8 @@ api_router.include_router(contacts_router)
 api_router.include_router(memories_router)  # 注册录音与素材管理路由。
 api_router.include_router(memory_extraction_router)
 api_router.include_router(memory_processing_router)
-api_router.include_router(memory_review_router)  # [新增] 注册回忆录级核对与复验。
+api_router.include_router(memory_review_router)  # 注册回忆录级核对与复验。
 api_router.include_router(memory_graph_router)
 api_router.include_router(memory_session_members_router)
 api_router.include_router(memory_contributors_router)
-api_router.include_router(product_experience_router)  # [新增] 产品目录、体验和好友分享。
+api_router.include_router(product_experience_router)  # 产品目录、体验和好友分享。

@@ -46,7 +46,7 @@ class MemoryConflict(Base):
         ),
         Index("idx_t_memory_conflict_status_created", "status", "created_at"),
         Index("idx_t_memory_conflict_job", "detected_by_job_id"),
-        # [新增] 成对冲突沿组核对，并保留原有独立记录。
+        # 成对冲突沿组核对，并保留原有独立记录。
         CheckConstraint(
             "conflict_group_id IS NULL OR validation_job_id IS NOT NULL",
             name="ck_memory_conflict_group_job",
@@ -79,7 +79,7 @@ class MemoryConflict(Base):
         nullable=True,
         comment="发现冲突的 AI 任务 ID",
     )
-    # [新增] 第四阶段的新成对记录关联冲突组和发布结果的任务。
+    # 第四阶段的新成对记录关联冲突组和发布结果的任务。
     conflict_group_id = Column(
         BigInteger,
         ForeignKey(

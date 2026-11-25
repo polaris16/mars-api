@@ -25,11 +25,10 @@ def list_relationships(
     service: Annotated[UserRelationshipService, Depends(UserRelationshipService)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
-    # [新增] 前端可获取全量关系组，或在分页前按对方昵称排序。
+    # 前端可获取全量关系组，或在分页前按对方昵称排序。
     paginate: Annotated[bool, Query(description="设为 false 时一次返回全部关系组")] = True,
     sort: Annotated[RelationshipSort, Query(description="默认按关系组创建时间倒序")] = "default",
 ):
-    # [删除-旧] return service.list_for_user(session, current_user, page, page_size)
     return service.list_for_user(
         session, current_user, page, page_size, paginate=paginate, sort=sort
     )

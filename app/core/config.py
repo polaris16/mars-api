@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     db_connect_timeout: int = Field(default=10, gt=0)
     db_echo: bool = False
 
-    # [新增] 企业权益可在联调环境单独启用，密钥和首位管理员由部署配置。
+    # 企业权益可在联调环境单独启用，密钥和首位管理员由部署配置。
     benefit_enabled: bool = False
     benefit_crypto_keys: SecretStr = SecretStr("")
     benefit_bootstrap_admin_user_ids: set[int] = Field(default_factory=set)
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
         "http://localhost,capacitor://localhost,ionic://localhost"
     )
 
-    # [新增] S3 兼容 OSS 配置；凭据仅由环境变量/.env 注入。
+    # S3 兼容 OSS 配置；凭据仅由环境变量/.env 注入。
     object_storage_provider: str = "s3"
     object_storage_endpoint_url: str | None = None
     object_storage_region: str = "us-east-1"
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     object_storage_max_image_bytes: int = Field(default=20971520, gt=0)
     object_storage_max_video_bytes: int = Field(default=524288000, gt=0)
     object_storage_max_text_bytes: int = Field(default=5242880, gt=0)
-    # [新增] Mock 用于产品体验联调，正式环境默认关闭生成。
+    # Mock 用于产品体验联调，正式环境默认关闭生成。
     product_experience_provider: Literal["disabled", "mock"] = "disabled"
 
     # Only the text model is used by Stage 2. The other model groups remain examples.

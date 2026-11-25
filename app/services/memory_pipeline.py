@@ -450,7 +450,6 @@ class MemoryPipelineService:
         transcription: TranscriptionResult | None,
     ) -> dict:
         allow_external = job.input_payload.get("followup_text_scope") == self.extraction._model_scope()
-        # [删除-旧] 整理成功后才补存缺失的原文版本。
         if transcription is not None:
             revision = save_source(
                 db, fragment_id=fragment.id, actor_id=actor.id,
@@ -521,8 +520,7 @@ class MemoryPipelineService:
         current = current_source(db, fragment_id)
         active = active_draft(db, current.id) if current else None
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        # [删除-旧] rows = db.execute(query.order_by(MemoryDraftVersion.id.desc()).offset((page - 1) * page_size).limit(page_size))
-        # [新增] 不同原文版本下的稿件仍按全局 ID 排列。
+        # 不同原文版本下的稿件仍按全局 ID 排列。
         ordering = MemoryDraftVersion.id if sort == "id_asc" else MemoryDraftVersion.id.desc()
         rows = db.execute(query.order_by(ordering).offset((page - 1) * page_size).limit(page_size))
         return {
@@ -590,8 +588,7 @@ class MemoryPipelineService:
         }
 
     def progress(self, db, user, session_id, fragment_id) -> dict:
-        # [删除-旧] fragment, _ = self._fragment(db, user, session_id, fragment_id)
-        # [新增] 处理进度同样收窄跨会话核验状态。
+        # 处理进度同样收窄跨会话核验状态。
         fragment, memory = self._fragment(db, user, session_id, fragment_id)
         source = current_source(db, fragment_id)
         draft = active_draft(db, source.id) if source else None
@@ -621,7 +618,6 @@ class MemoryPipelineService:
             rows = db.scalars(self.extraction._elements(session_id).where(
                 MemoryElement.processing_job_id == ext_job.id,
             ).order_by(MemoryElement.sequence_no))
-            # [删除-旧] extraction["elements"] = [self.extraction.element_response(db, row) for row in rows]
             shared = memory.owner_user_id != user.id
             invalidated = set() if shared else invalidated_verification_ids(db, user.id)
             extraction["elements"] = [

@@ -22,17 +22,17 @@ StaffRole = Literal["admin", "ops", "dispatcher", "provider"]
 OrderStatus = Literal["requested", "reserved", "in_progress", "completed", "cancelled", "failed"]
 GrantStatus = Literal["issued", "claimed", "voided", "expired"]
 OrderAction = Literal["confirm_booking", "reschedule", "start", "complete", "cancel", "fail"]
-# [新增] 运营目录按各资源的公开字段接受显式排序。
+# 运营目录按各资源的公开字段接受显式排序。
 BenefitServiceSort = Literal["default", "code_asc", "code_desc"]
 BenefitVersionSort = Literal["default", "version_asc", "version_desc"]
 BenefitPackageSort = Literal["default", "title_asc", "title_desc"]
-# [新增] 对普通业务列表公开各自可排序的字段。
+# 对普通业务列表公开各自可排序的字段。
 BenefitNameSort = Literal["default", "name_asc", "name_desc"]
 BenefitPlanSort = Literal["default", "title_asc", "title_desc"]
 BenefitStaffSort = Literal["default", "role_asc", "role_desc"]
 BenefitPurchaseSort = Literal["default", "created_at_asc", "created_at_desc"]
 BenefitInvitationSort = Literal["default", "expires_at_asc", "expires_at_desc"]
-# [新增] 未预约的服务单在按预约时间查询时置尾。
+# 未预约的服务单在按预约时间查询时置尾。
 BenefitOrderSort = Literal[
     "default",
     "created_at_asc",

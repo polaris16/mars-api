@@ -298,14 +298,6 @@ def _sync_pairs(db: Session, job, group, pairs: set[tuple[int, int]]) -> None:
     db.flush()
 
 
-# [删除-旧] def _pairs(claims: list[Claim]) -> set[tuple[int, int]]:
-#     return {
-#         tuple(sorted((left.record.element.id, right.record.element.id)))
-#         for left, right in combinations(claims, 2)
-#         if left.record.element.id != right.record.element.id
-#         and not compatible(left.value, right.value)
-#     }
-
 
 class MemoryValidationService:
     """使用来源中的明确证据核验，复验只在所有者自己的范围发布。"""
@@ -326,7 +318,7 @@ class MemoryValidationService:
                     )
                     return True
                 self._publish(db, job, records)
-                # [新增] 核验与图谱版本在同一事务内发布，租约到期一起回滚。
+                # 核验与图谱版本在同一事务内发布，租约到期一起回滚。
                 publish_graph(db, job, records)
                 now = datetime.now(timezone.utc)
                 if queue.lease_end(job) <= now:
@@ -348,24 +340,7 @@ class MemoryValidationService:
 
     def _publish(self, db: Session, job: MemoryValidationJob, records: dict) -> None:
         # 本地核验只读来源，持有所有者锁直到状态、证据和任务结果一起提交。
-        # [删除-旧] active_groups = {
-        #     (row.event_key, row.field_key): row
-        #     for row in db.scalars(
-        #         select(MemoryConflictGroup).where(
-        #             MemoryConflictGroup.owner_user_id == job.owner_user_id,
-        #             MemoryConflictGroup.is_del.is_(False),
-        #             MemoryConflictGroup.status != "superseded",
-        #         )
-        #     )
-        # }
-        # pending = pending_entities(db, list(records))
-        # reasons = {}
-        # contexts = defaultdict(lambda: defaultdict(list))
-        # for element_id, record in records.items():
-        #     claims, reasons[element_id] = collect_claims(db, record, pending)
-        #     for claim in claims:
-        #         contexts[claim.event_key][claim.field].append(claim)
-        # [新增] 归组结果覆盖原文一致和需要澄清的近似叙述。
+        # 归组结果覆盖原文一致和需要澄清的近似叙述。
         active_groups = active_conflict_groups(db, job.owner_user_id)
         events, reasons, pending = group_claims(db, records, active_groups)
         reopen_id = job.input_payload.get("reopen_question_id")
@@ -380,7 +355,6 @@ class MemoryValidationService:
         )
         claim_keys = sorted(
             claim.key
-            # [删除-旧] for fields in contexts.values()
             # for claims in fields.values()
             for event in events.values()
             for claims in event.fields.values()
@@ -394,13 +368,6 @@ class MemoryValidationService:
             "source_versions": source_versions,
             "answer_ids": answer_ids,
         }
-        # [删除-旧] for event_key, fields in contexts.items():
-        #     disputed = {field: _pairs(claims) for field, claims in fields.items()}
-        #     uncertain = [
-        #         claim for field, claims in fields.items() if disputed[field] for claim in claims
-        #     ]
-        #     clarify = bool(uncertain) and not all(claim.strong_identity for claim in uncertain)
-        #     if clarify:
         for event_key, event in events.items():
             uncertain = event.clarification
             if uncertain:
@@ -414,20 +381,16 @@ class MemoryValidationService:
                             element_id = claim.record.element.id
                             reasons[element_id] = reasons[element_id] or "event_unconfirmed"
                     continue
-            # [删除-旧] for field, claims in fields.items():
             for field, claims in event.fields.items():
                 key = (event_key, field)
                 current = active_groups.pop(key, None)
-                # [删除-旧] if current is None and not disputed[field]:
                 pairs = event.disputed[field]
                 if current is None and not pairs:
                     continue
                 group = self._group(db, job, key, current, claims)
-                # [删除-旧] accepted = self._resolve(db, job, group, claims, disputed[field], reopen_id)
                 accepted = self._resolve(db, job, group, claims, pairs, reopen_id)
                 for claim in claims:
                     if claim.record.element.id not in accepted:
-                        # [删除-旧] reasons[claim.record.element.id] = "evidence_conflict"
                         element_id = claim.record.element.id
                         reasons[element_id] = reasons[element_id] or "evidence_conflict"
         for group in active_groups.values():
@@ -498,7 +461,6 @@ class MemoryValidationService:
 
     @staticmethod
     def _group(db, job, key, group, claims):
-        # [删除-旧] evidence_fingerprint = fingerprint(sorted({item.key for item in claims}))
         evidence_fingerprint = claims_fingerprint(claims)
         if group is None:
             group = MemoryConflictGroup(

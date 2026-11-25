@@ -20,7 +20,6 @@ from app.schemas.list_sort import IdSort
 from app.schemas.memory_review import ReviewAnswerCreate, ValidationJobCreate
 from app.services.memory_validation_queue import enqueue, lock_owner
 
-# [删除-旧] from app.services.memory_validation_rules import current_records
 from app.services.memory_validation_rules import (
     active_conflict_groups,
     current_group_fingerprint,
@@ -159,13 +158,11 @@ class MemoryReviewService:
         ):
             raise HTTPException(404, "会话不存在")
         query = self._questions(owner_id).where(MemoryReviewQuestion.status == status)
-        # [删除-旧] questions = list(db.execute(query.order_by(MemoryReviewQuestion.id.desc())))
-        # [新增] 保留问题顺序，筛完可见证据后再切页。
+        # 保留问题顺序，筛完可见证据后再切页。
         ordering = MemoryReviewQuestion.id if sort == "id_asc" else MemoryReviewQuestion.id.desc()
         questions = list(db.execute(query.order_by(ordering)))
         if not questions:
             return {"page": page, "page_size": page_size, "total": 0, "items": []}
-        # [删除-旧] evidence = self._evidence(db, questions, current_records(db, owner_id))
         records = current_records(db, owner_id)
         evidence = self._evidence(db, questions, records)
         groups, events = {}, {}
@@ -175,12 +172,6 @@ class MemoryReviewService:
         visible = []
         for question, group in questions:
             items = self._visible(question, group, evidence)
-            # [删除-旧] if status == "pending" and (
-            #     group.status != "open"
-            #     or question.evidence_fingerprint != group.evidence_fingerprint
-            #     or not items
-            #     or len(items) != len(question.evidence_ids)
-            # ):
             if status == "pending" and not self._current_question(
                 question, group, items, events, groups
             ):
@@ -220,14 +211,7 @@ class MemoryReviewService:
         }
 
     def _require_current(self, db, owner_id, question, group):
-        # [删除-旧] evidence = self._evidence(db, [(question, group)], current_records(db, owner_id))
-        # if (
-        #     group.status != "open"
-        #     or question.evidence_fingerprint != group.evidence_fingerprint
-        #     or not question.evidence_ids
-        #     or len(self._visible(question, group, evidence)) != len(question.evidence_ids)
-        # ):
-        # [新增] 调用方持有所有者锁，新提交的提取结果也要纳入当前题的证据。
+        # 调用方持有所有者锁，新提交的提取结果也要纳入当前题的证据。
         records = current_records(db, owner_id)
         groups = active_conflict_groups(db, owner_id)
         events, _, _ = group_claims(db, records, groups)

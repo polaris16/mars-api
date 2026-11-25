@@ -26,7 +26,7 @@ class BenefitServiceVersion(AuditFields, Base):
             "fulfillment_mode IN ('online', 'appointment')",
             name="ck_benefit_service_version_fulfillment",
         ),
-        # [新增] 线上版本可以绑定已接入的履约能力。
+        # 线上版本可以绑定已接入的履约能力。
         CheckConstraint(
             "online_handler IS NULL OR "
             "(fulfillment_mode = 'online' AND online_handler = 'product_experience')",

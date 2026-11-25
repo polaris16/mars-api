@@ -180,7 +180,7 @@ class BenefitOrderService:
     def access_scope(ctx, stmt, *, fulfill):
         if not fulfill:
             return stmt.where(BenefitGrant.recipient_user_id == ctx.actor_id), set()
-        # [新增] 派单入口只管理预约式履约，线上作品留在用户的权益记录。
+        # 派单入口只管理预约式履约，线上作品留在用户的权益记录。
         appointment = (
             select(BenefitPackageItem.id)
             .join(
@@ -229,7 +229,7 @@ class BenefitOrderService:
                 stmt = stmt.where(BenefitServiceOrder.scheduled_start_at >= start_from)
             if start_before is not None:
                 stmt = stmt.where(BenefitServiceOrder.scheduled_start_at < start_before)
-            # [新增] 预约列表将尚未分配预约时间的订单放在最后。
+            # 预约列表将尚未分配预约时间的订单放在最后。
             order = BenefitServiceOrder
             ordering = {
                 "default": (order.id.desc(),),
@@ -246,7 +246,6 @@ class BenefitOrderService:
             }[sort]
             return paginate(
                 ctx.db,
-                # [删除-旧] stmt.order_by(BenefitServiceOrder.id.desc()),
                 stmt.order_by(*ordering),
                 page,
                 size,

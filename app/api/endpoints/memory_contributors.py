@@ -35,7 +35,6 @@ def list_contributors(
     paginate: Paginate = True,
     sort: ContributorSort = "default",
 ) -> ContributorPage:
-    # [删除-旧] return service.list_contributors(db, user, session_id, page, page_size)
     return service.list_contributors(
         db, user, session_id, page, page_size, paginate=paginate, sort=sort
     )

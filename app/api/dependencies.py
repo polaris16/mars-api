@@ -53,7 +53,7 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-# [新增] 让仅支持分页的列表在参数校验阶段给出明确的 422。
+# 让仅支持分页的列表在参数校验阶段给出明确的 422。
 def _require_pagination(value: bool) -> bool:
     if not value:
         raise ValueError("此列表仅支持分页，请省略 paginate 或设为 true")

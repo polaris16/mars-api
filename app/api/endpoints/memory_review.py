@@ -43,7 +43,6 @@ def list_memory_review_questions(
     paginate: PaginateOnly = True,
     sort: IdSort = "default",
 ):
-    # [删除-旧] return service.list_questions(db, user, page, page_size, status, session_id)
     return service.list_questions(db, user, page, page_size, status, session_id, sort=sort)
 
 

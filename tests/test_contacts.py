@@ -66,7 +66,10 @@ def test_confirmed_contacts_outlive_invitation_deadline(client, monkeypatch):
     Clock.current = deadline + timedelta(days=8)
     assert client.get(CONTACTS, headers=alice).json()["total"] == 1
     assert client.get(CONTACTS, headers=bob).json()["total"] == 1
-    history = client.get(f"{CONTACT_REQUESTS}?direction=outgoing", headers=alice).json()
+    # [删除-旧] history = client.get(f"{CONTACT_REQUESTS}?direction=outgoing", headers=alice).json()
+    history = client.get(
+        CONTACT_REQUESTS, headers=alice, params={"direction": "outgoing", "status": "accepted"}
+    ).json()
     assert history["items"][0]["status"] == "accepted"
     revoked = client.post(f"{RELATIONSHIPS}/{row['id']}/revoke", headers=alice)
     assert revoked.status_code == 200, revoked.text
@@ -333,6 +336,12 @@ def test_new_contact_requests_show_messages_and_rejections_in_history(client):
         ]
         == 1
     )
+    # [新增] 默认的收件列表与显式查询 pending 一致。
+    assert client.get(CONTACT_REQUESTS, headers=bob, params=common).json()["total"] == 1
+    assert (
+        client.get(CONTACT_REQUESTS, headers=alice, params={"direction": "outgoing"}).json()["total"]
+        == 0
+    )
     assert client.get(CONTACTS, headers=alice).json()["total"] == 0
 
 
@@ -353,13 +362,22 @@ def test_contact_history_keeps_original_result_after_relationship_revocation(cli
         assert db.get(UserRelationship, inverse["id"]).request_message is None
 
     outgoing = {"direction": "outgoing"}
-    first = client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json()
+    # [删除-旧] first = client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json()
+    # [新增] 默认列表隐藏已通过的申请，历史页面可按状态读取。
+    assert client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json()["total"] == 0
+    assert (
+        client.get(CONTACT_REQUESTS, headers=bob, params={"direction": "incoming"}).json()["total"]
+        == 0
+    )
+    accepted_filter = {**outgoing, "status": "accepted"}
+    first = client.get(CONTACT_REQUESTS, headers=alice, params=accepted_filter).json()
     (kept,) = first["items"]
     assert kept["status"] == "accepted" and kept["resolved_at"]
-    assert client.get(CONTACT_REQUESTS, headers=bob, params=outgoing).json()["total"] == 0
+    assert client.get(CONTACT_REQUESTS, headers=bob, params=accepted_filter).json()["total"] == 0
     assert client.post(f"{RELATIONSHIPS}/{inverse['id']}/revoke", headers=bob).status_code == 200
     assert client.get(CONTACTS, headers=alice).json()["total"] == 0
-    assert client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json() == first
+    # [删除-旧] assert client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json() == first
+    assert client.get(CONTACT_REQUESTS, headers=alice, params=accepted_filter).json() == first
 
     withdrawn = client.post(
         CONTACT_REQUESTS, headers=alice, json={"related_user_id": 3, "message": "您好"}
@@ -387,6 +405,7 @@ def test_contact_history_keeps_original_result_after_relationship_revocation(cli
         CONTACT_REQUESTS, headers=alice, params={**outgoing, "status": "expired"}
     ).json()["items"][0]
     assert row["request_id"] == expired_id and row["resolved_at"] is None
+    assert client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json()["total"] == 0
     found = client.post(CONTACT_SEARCH, headers=alice, json={"keyword": "Carol"})
     assert [item["id"] for item in found.json()["items"]] == [3]
     assert (
@@ -395,6 +414,24 @@ def test_contact_history_keeps_original_result_after_relationship_revocation(cli
         ).json()["total"]
         == 0
     )
+
+    # [新增] 组合查询先筛选状态，再统计和分页。
+    pending = client.post(
+        CONTACT_REQUESTS, headers=alice, json={"related_user_id": 3, "message": "重新申请"}
+    )
+    assert pending.status_code == 201, pending.text
+    default_result = client.get(CONTACT_REQUESTS, headers=alice, params=outgoing).json()
+    assert default_result["total"] == 1
+    assert default_result["items"][0]["request_id"] == pending.json()["id"]
+    mixed = {**outgoing, "status": ["accepted", "expired"], "page_size": 1}
+    page_one = client.get(CONTACT_REQUESTS, headers=alice, params=mixed).json()
+    assert page_one["total"] == 2 and page_one["items"][0]["request_id"] == expired_id
+    page_two = client.get(CONTACT_REQUESTS, headers=alice, params={**mixed, "page": 2}).json()
+    assert page_two["total"] == 2 and page_two["items"][0]["request_id"] == request_id
+    invalid = client.get(
+        CONTACT_REQUESTS, headers=alice, params={**outgoing, "status": ["pending", "active"]}
+    )
+    assert invalid.status_code == 422
 
 
 def test_invite_code_and_contact_lists_follow_both_accounts(client):

@@ -21,7 +21,7 @@ class BenefitError(HTTPException):
     def __init__(self, status: int, code: str, detail: str, *, extra: dict | None = None):
         super().__init__(status_code=status, detail=detail)
         self.code = code
-        # [新增] 部分业务拒绝同时返回可直接用于界面更新的计数。
+        # 部分业务拒绝同时返回可直接用于界面更新的计数。
         self.extra = extra or {}
 
 
@@ -63,7 +63,7 @@ def page_data(items: list, page: int, size: int, total: int) -> dict:
     return {"items": items, "page": page, "page_size": size, "total": total}
 
 
-# [新增] 目录列表可先选出完整结果或当前页，再批量组装子项。
+# 目录列表可先选出完整结果或当前页，再批量组装子项。
 def select_page(db: Session, statement, page: int, size: int, *, paginate_results: bool):
     if paginate_results:
         total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
@@ -76,8 +76,6 @@ def select_page(db: Session, statement, page: int, size: int, *, paginate_result
 def paginate(
     db: Session, statement, page: int, size: int, render, *, paginate_results=True
 ) -> dict:
-    # [删除-旧] total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
-    # rows = db.scalars(statement.offset((page - 1) * size).limit(size)).all()
     rows, page, size, total = select_page(
         db, statement, page, size, paginate_results=paginate_results
     )

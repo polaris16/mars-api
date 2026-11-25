@@ -17,7 +17,7 @@ from sqlalchemy import (
 
 from app.models.base import Base
 
-# [新增] 产品图片使用独立用途，保留媒体对象的统一校验和存储元数据。
+# 产品图片使用独立用途，保留媒体对象的统一校验和存储元数据。
 PRODUCT_IMAGE_PURPOSES = "'product_reference', 'experience_source', 'experience_generated'"
 
 
@@ -26,10 +26,7 @@ class MediaAsset(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_media_asset_pkey"),
         UniqueConstraint("object_key", name="t_media_asset_object_key_key"),
-        # [删除-旧] purpose 仅允许 recording/attachment；现由下方约束增加 source。
-        # [删除-旧] media_type 仅允许 audio/image/video；现由下方约束增加 text。
         CheckConstraint(
-            # [删除-旧] "purpose IN ('recording', 'source', 'attachment')", name="ck_t_media_asset_purpose"
             f"purpose IN ('recording', 'source', 'attachment', {PRODUCT_IMAGE_PURPOSES})",
             name="ck_t_media_asset_purpose",
         ),
@@ -77,29 +74,24 @@ class MediaAsset(Base):
             "media_type",
             unique=True,
             postgresql_where=text(
-                # [删除-旧] "is_del = false AND content_sha256 IS NOT NULL "
-                # "AND upload_status IN ('uploaded', 'attached')"
                 "is_del = false AND content_sha256 IS NOT NULL "
                 "AND upload_status IN ('uploaded', 'attached') "
                 "AND purpose <> 'experience_generated'"
             ),
         ),
-        # [新增] 用上传账户字段限定素材库查询。
+        # 用上传账户字段限定素材库查询。
         Index("idx_t_media_asset_uploaded_by_status", "uploaded_by_user_id", "upload_status"),
         {"comment": "用户媒体对象与上传记录"},
     )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="媒体对象ID")
-    # [删除-旧] user_id 曾同时表达媒体对象所属用户；现明确为上传账户，提供者记录在片段/附件表。
-    # user_id = Column(BigInteger, ForeignKey("t_user.id", ondelete="CASCADE", name="fk_t_media_asset_user"), nullable=False, comment="所属用户ID")
-    # [新增] 上传账户与素材提供者分开表达。
+    # 上传账户与素材提供者分开表达。
     uploaded_by_user_id = Column(
         BigInteger,
         ForeignKey("t_user.id", ondelete="CASCADE", name="fk_t_media_asset_uploaded_by"),
         nullable=False,
         comment="上传账户ID",
     )
-    # [删除-旧] purpose = Column(String(30), nullable=False, comment="用途：recording/source/attachment")
     purpose = Column(
         String(30), nullable=False, comment="用途：录音、片段来源、附件、产品图、体验原照或成图"
     )
@@ -116,13 +108,12 @@ class MediaAsset(Base):
     content_sha256 = Column(String(64), nullable=True, comment="服务端确认的文件SHA-256")
     duration_ms = Column(BigInteger, nullable=True, comment="音频或视频时长毫秒数")
     sample_rate_hz = Column(Integer, nullable=True, comment="音频采样率Hz")
-    # [新增] 已校验的产品和体验图片记录宽高。
+    # 已校验的产品和体验图片记录宽高。
     width_px = Column(Integer, comment="图片宽度，单位像素")
     height_px = Column(Integer, comment="图片高度，单位像素")
     upload_status = Column(
         String(20), nullable=False, server_default=text("'pending_upload'"), comment="上传状态"
     )
-    # [删除-旧] upload_expires_at = Column(DateTime(timezone=True), nullable=False, comment="上传授权过期时间")
     upload_expires_at = Column(DateTime(timezone=True), comment="直传授权过期时间，后台成图可空")
     uploaded_at = Column(DateTime(timezone=True), nullable=True, comment="对象确认上传时间")
     purge_after = Column(DateTime(timezone=True), nullable=True, comment="计划物理清理时间")

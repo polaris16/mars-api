@@ -48,7 +48,7 @@ class InterestService:
 
         requested_ids = set(interest_ids)
         with session.begin():
-            # [修改] 先锁用户，再读旧兴趣，保证同一用户的两次替换依次执行。
+            # 先锁用户，再读旧兴趣，保证同一用户的两次替换依次执行。
             current_user = session.scalar(
                 select(User)
                 .where(User.id == user.id, User.is_del.is_(False))

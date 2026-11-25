@@ -8,9 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.schemas.list_sort import NameSort
 
-# [删除-旧] RelationshipType = Literal["family", "agent", "caregiver", "other"]
 RelationshipType = Literal["family", "agent", "caregiver", "other", "contact"]
-# [新增] 省略排序时保留各列表的既有顺序。
+# 省略排序时保留各列表的既有顺序。
 RelationshipSort = Literal["default", "name_asc", "name_desc"]
 RelationCode = Literal[
     "parent_of",
@@ -61,7 +60,7 @@ class RelationshipListResponse(BaseModel):
     total: int
 
 
-# [新增] 联系人列表仅返回可展示的用户资料。
+# 联系人列表仅返回可展示的用户资料。
 ContactView = Literal["active", "incoming", "outgoing"]
 ContactCode = Annotated[
     str,
@@ -77,8 +76,7 @@ class ContactCodeResponse(BaseModel):
 
 
 class ContactRequest(BaseModel):
-    # [删除-旧] code: ContactCode
-    # [新增] 原邀请码请求可继续使用 code，搜索结果使用用户 ID 与留言。
+    # 原邀请码请求可继续使用 code，搜索结果使用用户 ID 与留言。
     code: ContactCode | None = None
     related_user_id: int | None = Field(default=None, strict=True, gt=0, le=2**63 - 1)
     message: (
@@ -116,14 +114,14 @@ class ContactListResponse(RelationshipListResponse):
     items: list[ContactRecordResponse]
 
 
-# [新增] 搜索词放在请求体，允许 App 提交空输入以清除结果。
+# 搜索词放在请求体，允许 App 提交空输入以清除结果。
 class ContactSearchRequest(BaseModel):
     keyword: Annotated[
         str, StringConstraints(strip_whitespace=True, max_length=100, pattern=r"^[^\x00]*$")
     ]
     page: int = Field(default=1, ge=1, le=2**31 - 1)
     page_size: int = Field(default=20, ge=1, le=20)
-    # [新增] 排序与分页参数留在请求体，候选检索始终分页。
+    # 排序与分页参数留在请求体，候选检索始终分页。
     paginate: Literal[True] = Field(default=True, description="候选搜索仅支持分页")
     sort: NameSort = "default"
 

@@ -35,7 +35,6 @@ def list_members(
     paginate: Paginate = True,
     sort: MemberSort = "default",
 ) -> MemberPage:
-    # [删除-旧] return service.list_members(db, user, session_id, page, page_size)
     return service.list_members(db, user, session_id, page, page_size, paginate=paginate, sort=sort)
 
 

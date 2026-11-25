@@ -48,12 +48,12 @@ from app.services.user_relationship_service import UserRelationshipService
 
 MAX_ATTACHMENTS_PER_FRAGMENT = 9
 CONFIRMED_UPLOAD_STATES = {"uploaded", "attached"}
-# [新增] 录音与素材入口只读取回忆录用途，产品体验由独立入口鉴权。
+# 录音与素材入口只读取回忆录用途，产品体验由独立入口鉴权。
 MEMORY_MEDIA_PURPOSES = ("recording", "source", "attachment")
 
 
 class UploadItemError(HTTPException):
-    """[新增] 保留单文件错误详情，并为批量响应提供稳定业务码。"""
+    """保留单文件错误详情，并为批量响应提供稳定业务码。"""
 
     def __init__(
         self, status_code: int, detail: str, *, code: str, retryable: bool = False
@@ -429,7 +429,7 @@ class MemoryService:
         ]
         if is_favorite is not None:
             filters.append(MemorySession.is_favorite.is_(is_favorite))
-        # [修改] 带方向的排序值完整指定排序，早期 sort 与 order 组合继续有效。
+        # 带方向的排序值完整指定排序，早期 sort 与 order 组合继续有效。
         if sort.endswith(("_asc", "_desc")):
             sort, order = sort.rsplit("_", 1)
         sort_column = (
@@ -501,7 +501,7 @@ class MemoryService:
                 if row.topic_id
                 else None
             )
-            # [修改] 摘要使用录制时间，与会话的最近素材时间保持一致。
+            # 摘要使用录制时间，与会话的最近素材时间保持一致。
             excerpt = self._latest_excerpt(session, row.id)
             items.append(
                 {
@@ -587,13 +587,13 @@ class MemoryService:
                     attachment.updated_at = now
                     affected_asset_ids.add(attachment.media_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
-            # [新增] 该会话的历史元素可能支撑其他会话的核对问题。
+            # 该会话的历史元素可能支撑其他会话的核对问题。
             if row.visibility is not None:
                 schedule_material_validation(
                     session, row.owner_user_id, row.id, actor_id=user.id, reason="session_deleted",
                 )
 
-    # [新增] 在既有作用域格式内区分批量尝试与服务端生成的单文件上传键。
+    # 在既有作用域格式内区分批量尝试与服务端生成的单文件上传键。
     @staticmethod
     def batch_attachment_upload_key(
         user_id: int, session_id: int, fragment_id: int, client_file_id: uuid.UUID
@@ -671,7 +671,7 @@ class MemoryService:
         self._require_pending_upload(resolved)
         return self._signed_upload(resolved, storage)
 
-    # [新增] 有效关联按 ID 选择，文件被保留多次时也能返回稳定的代表关联。
+    # 有效关联按 ID 选择，文件被保留多次时也能返回稳定的代表关联。
     @staticmethod
     def _active_attachment_id(session: Session, fragment_id: int, asset_id: int) -> int | None:
         return session.scalar(
@@ -809,7 +809,7 @@ class MemoryService:
                     user_id, memory.id, body.fragment_id, batch_file_id
                 )
                 if ask_about_attachment_duplicates:
-                    # [新增] 先查操作级幂等记录，再决定是否需要签发或复用文件。
+                    # 先查操作级幂等记录，再决定是否需要签发或复用文件。
                     link = self._attachment_operation(
                         session, body.fragment_id, user_id, batch_file_id
                     )
@@ -837,7 +837,6 @@ class MemoryService:
                 if attempt is not None:
                     if attempt.uploaded_by_user_id != user_id:
                         raise UploadItemError(404, "此上传记录不可用", code="asset_unavailable")
-                    # [删除-旧] return self._replay_attachment_authorization(session, attempt, body, storage)
                     grant = self._replay_attachment_authorization(session, attempt, body, storage)
                     if ask_about_attachment_duplicates and grant["reused"]:
                         grant["attachment_id"] = self._active_attachment_id(
@@ -845,17 +844,6 @@ class MemoryService:
                         )
                     return grant
             if body.sha256:
-                # [删除-旧] existing = session.scalar(
-                #     select(MediaAsset).where(
-                #         MediaAsset.uploaded_by_user_id == user_id,
-                #         MediaAsset.purpose == body.purpose,
-                #         MediaAsset.media_type == body.media_type,
-                #         MediaAsset.content_sha256 == body.sha256.lower(),
-                #         MediaAsset.size_bytes == body.size_bytes,
-                #         MediaAsset.upload_status.in_(["uploaded", "attached"]),
-                #         MediaAsset.is_del.is_(False),
-                #     )
-                # )
                 existing = self._find_confirmed_upload(
                     session,
                     user_id,
@@ -865,7 +853,6 @@ class MemoryService:
                     body.size_bytes,
                 )
                 if existing is not None:
-                    # [删除-旧] return {"reused": True, "asset_id": existing.id}
                     grant = {"reused": True, "asset_id": existing.id}
                     if ask_about_attachment_duplicates and body.fragment_id is not None:
                         grant["attachment_id"] = self._active_attachment_id(
@@ -878,8 +865,6 @@ class MemoryService:
                     )
                     if pending is not None:
                         return pending
-            # Store the grant target in the server-generated key so pending uploads can be reauthorized.
-            # [删除-旧] key = f"users/{user_id}/{body.purpose}/scope/{memory.id}/{body.fragment_id or 0}/{uuid.uuid4().hex}"
             key = batch_key or (
                 f"users/{user_id}/{body.purpose}/scope/{memory.id}/"
                 f"{body.fragment_id or 0}/{uuid.uuid4().hex}"
@@ -903,14 +888,6 @@ class MemoryService:
             )
             session.add(asset)
             session.flush()
-        # [删除-旧] url = storage.create_upload_url(
-        #     key, body.content_type, settings.object_storage_upload_ttl_seconds, body.size_bytes
-        # )
-        # return {
-        #     "reused": False, "asset_id": asset.id, "upload_method": "PUT", "upload_url": url,
-        #     "required_headers": {"Content-Type": body.content_type, "If-None-Match": "*"},
-        #     "expires_at": expires_at,
-        # }
         ttl = settings.object_storage_upload_ttl_seconds if batch_file_id is None else None
         return self._signed_upload(asset, storage, ttl)
 
@@ -920,7 +897,6 @@ class MemoryService:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if asset.upload_status != "pending_upload" or expires_at <= datetime.now(timezone.utc):
-            # [删除-旧] raise HTTPException(status_code=409, detail="上传授权已失效或素材状态不可确认")
             code = (
                 "authorization_expired"
                 if asset.upload_status in {"pending_upload", "expired"}
@@ -951,7 +927,7 @@ class MemoryService:
             self._require_source_owner(memory, role)
         self._require_contribution(session, memory, user, role)
 
-    # [新增] 待确认对象与查重替身必须属于原批量尝试；已验证附件可以同账号跨片段复用。
+    # 待确认对象与查重替身必须属于原批量尝试；已验证附件可以同账号跨片段复用。
     def _batch_completion_asset(
         self, session: Session, asset: MediaAsset, expected_key: str
     ) -> MediaAsset:
@@ -1042,25 +1018,13 @@ class MemoryService:
                 if pending.upload_status in {"uploaded", "attached"}:
                     return pending
                 self._require_pending_upload(pending)
-                # [删除-旧] existing = session.scalar(
-                #     select(MediaAsset).where(
-                #         MediaAsset.id != asset_id,
-                #         MediaAsset.uploaded_by_user_id == user_id,
-                #         MediaAsset.purpose == purpose,
-                #         MediaAsset.media_type == media_type,
-                #         MediaAsset.content_sha256 == digest,
-                #         MediaAsset.size_bytes == size,
-                #         MediaAsset.upload_status.in_(["uploaded", "attached"]),
-                #         MediaAsset.is_del.is_(False),
-                #     )
-                # )
                 existing = self._find_confirmed_upload(
                     session, user_id, purpose, media_type, digest, size
                 )
                 if existing is None:
                     raise
                 pending.upload_status = "failed"
-                # [新增] 批量重试可用已校验的摘要找到真正的素材，即使未提交预期 SHA-256。
+                # 批量重试可用已校验的摘要找到真正的素材，即使未提交预期 SHA-256。
                 if purpose == "attachment" and object_key.rsplit("/", 1)[-1].startswith("batch-"):
                     pending.content_sha256 = digest
                     pending.size_bytes = size
@@ -1117,7 +1081,7 @@ class MemoryService:
                 if body.source_origin or body.narrator_user_id is not None or body.narrator_spans:
                     raise HTTPException(status_code=409, detail="来源和叙述者标注需启用版本化会话")
             elif body.source_type == "audio" and (body.transcript_raw is not None or body.transcript_segments):
-                # [新增] 有原声的新版会话由服务端完成转写。
+                # 有原声的新版会话由服务端完成转写。
                 raise HTTPException(status_code=422, detail="音频转写及时间定位由服务端生成")
             asset = (
                 self._asset(session, user.id, source_asset_id, lock=True)
@@ -1204,7 +1168,7 @@ class MemoryService:
             )
             or 0
         )
-        # [新增] 序号仍是默认顺序，也用于记录时间相同的片段。
+        # 序号仍是默认顺序，也用于记录时间相同的片段。
         fragment = MemoryFragment
         order = {
             "default": (fragment.sequence_no,),
@@ -1216,7 +1180,6 @@ class MemoryService:
         rows = session.scalars(
             select(MemoryFragment)
             .where(MemoryFragment.session_id == session_id, MemoryFragment.is_del.is_(False))
-            # [删除-旧] .order_by(MemoryFragment.sequence_no)
             .order_by(*order, fragment.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -1378,19 +1341,19 @@ class MemoryService:
             if fragment.source_asset_id is not None:
                 affected_asset_ids.add(fragment.source_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
-            # [新增] 直接文字没有文件引用，仍需刷出软删除再重算会话时间。
+            # 直接文字没有文件引用，仍需刷出软删除再重算会话时间。
             session.flush()
             memory.last_material_at = self._latest_recorded_at(session, memory.id)
             memory.updated_by = user.id
             memory.updated_at = now
-            # [新增] 删除来源时同事务登记跨会话复验。
+            # 删除来源时同事务登记跨会话复验。
             if memory.visibility is not None:
                 schedule_material_validation(
                     session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
                     actor_id=user.id, reason="fragment_deleted",
                 )
 
-    # [新增] 两种附件入口共用关联写入和图谱复验触发。
+    # 两种附件入口共用关联写入和图谱复验触发。
     @staticmethod
     def _add_attachment_link(
         session: Session,
@@ -1488,26 +1451,12 @@ class MemoryService:
                     )
                 ):
                     raise HTTPException(status_code=409, detail="该素材已关联到此语音片段")
-                # [删除-旧] link = FragmentAttachment(
-                #     fragment_id=fragment.id, media_asset_id=asset.id,
-                #     contributor_id=contributor.id, caption=item.caption, sort_order=item.sort_order,
-                #     created_by=user.id, updated_by=user.id,
-                # )
-                # session.add(link)
-                # asset.upload_status = "attached"
-                # asset.updated_by = user.id
                 result.append(
                     self._add_attachment_link(
                         session, fragment.id, contributor.id, user.id, asset, item
                     )
                 )
             session.flush()
-            # [删除-旧] [新增] 附件更动触发复核当前片段已有的有效说法。
-            # if memory.visibility is not None:
-            #     schedule_material_validation(
-            #         session, memory.owner_user_id, memory.id, fragment_id=fragment.id,
-            #         actor_id=user.id, reason="attachments_added",
-            #     )
             self._schedule_attachments_added(session, memory, fragment.id, user.id)
             return [self._attachment_response(session, link, storage) for link in result]
 
@@ -1624,7 +1573,7 @@ class MemoryService:
         if media_type:
             filters.append(MediaAsset.media_type == media_type)
         total = session.scalar(select(func.count(MediaAsset.id)).where(*filters)) or 0
-        # [新增] 同一创建时间使用 ID 保持翻页稳定。
+        # 同一创建时间使用 ID 保持翻页稳定。
         created_at = (
             MediaAsset.created_at.asc()
             if sort == "created_at_asc"
@@ -1633,7 +1582,6 @@ class MemoryService:
         rows = session.scalars(
             select(MediaAsset)
             .where(*filters)
-            # [删除-旧] .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
             .order_by(created_at, MediaAsset.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)

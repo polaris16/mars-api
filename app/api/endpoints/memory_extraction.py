@@ -75,7 +75,6 @@ def list_extraction_jobs(
     paginate: PaginateOnly = True,
     sort: CreatedAtSort = "default",
 ) -> ExtractionJobPage:
-    # [删除-旧] return service.list_jobs(db, user, session_id, fragment_id, page, page_size)
     return service.list_jobs(db, user, session_id, fragment_id, page, page_size, sort=sort)
 
 

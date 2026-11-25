@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-# [新增] 推荐排序只调整兴趣组和通用组各自的内部顺序。
+# 推荐排序只调整兴趣组和通用组各自的内部顺序。
 TopicRecommendationSort = Literal[
     "default", "participant_count_asc", "participant_count_desc", "title_asc", "title_desc"
 ]

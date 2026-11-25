@@ -100,8 +100,6 @@ class MemoryContributorService:
 
     @staticmethod
     def _display_name(account: User, contributor_type: str) -> str:
-        # Older records may have used the login username or phone as a display name.
-        # [删除-旧] return account.display_name or ("会话主人" if contributor_type == "owner" else "亲属")
         return account.display_name or ("会话主人" if contributor_type == "owner" else "素材提供者")
 
     def _response(
@@ -141,15 +139,7 @@ class MemoryContributorService:
     ) -> ContributorPage:
         memory, _ = self.members.require_manager(db, session_id, user.id, lock=False)
         query = self._records(session_id)
-        # [删除-旧] total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        # rows = db.execute(
-        #     query.join(User, User.id == MemoryContributor.account_user_id)
-        #     .add_columns(User)
-        #     .order_by(MemoryContributor.id)
-        #     .offset((page - 1) * page_size)
-        #     .limit(page_size)
-        # ).all()
-        # [新增] 全量和分页都使用相同的会话管理权限和记录范围。
+        # 全量和分页都使用相同的会话管理权限和记录范围。
         ordering = MemoryContributor.id.desc() if sort == "id_desc" else MemoryContributor.id
         listing = (
             query.join(User, User.id == MemoryContributor.account_user_id)
@@ -188,7 +178,6 @@ class MemoryContributorService:
             member = None if owner else self._eligible_member(db, memory, target_id, now)
             if not owner and member is None:
                 raise HTTPException(
-                    # [删除-旧] status_code=422, detail="提供者需要有效的亲属关系和会话贡献授权"
                     status_code=422,
                     detail="提供者需要有效的用户关系和会话贡献授权",
                 )
@@ -261,7 +250,7 @@ class MemoryContributorService:
                     row.consented_at = now
                 row.updated_by = actor_id
                 row.updated_at = now
-                # [新增] 同意状态变更可能使现有叙事证据失效。
+                # 同意状态变更可能使现有叙事证据失效。
                 if memory.visibility is not None and row.contributor_type == "registered_user":
                     schedule_material_validation(
                         db,

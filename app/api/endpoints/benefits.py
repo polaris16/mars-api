@@ -71,7 +71,6 @@ class BenefitRoute(APIRoute):
                 response = await handle(request)
             except BenefitError as exc:
                 response = JSONResponse(
-                    # [删除-旧] {"code": exc.code, "detail": exc.detail},
                     {**exc.extra, "code": exc.code, "detail": exc.detail},
                     status_code=exc.status_code,
                 )
@@ -114,7 +113,7 @@ class Pagination:
 
 Context = Annotated[BenefitContext, Depends(benefit_context)]
 Page = Annotated[Pagination, Depends(Pagination)]
-# [新增] 运营目录列表可切到全量模式。
+# 运营目录列表可切到全量模式。
 CatalogPaginate = Annotated[bool, Query(description="设为 false 时返回全部匹配记录")]
 Key = Annotated[UUID, Header(alias="Idempotency-Key")]
 Storage = Annotated[ObjectStorageService, Depends(get_object_storage_service)]
@@ -158,7 +157,6 @@ def list_enterprises(
     paginate: PaginateOnly = True,
     sort: BenefitNameSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.enterprises(ctx, page.number, page.size)
     return catalog.enterprises(ctx, page.number, page.size, sort=sort)
 
 
@@ -179,7 +177,6 @@ def list_benefit_staff(
     paginate: PaginateOnly = True,
     sort: BenefitStaffSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.staff(ctx, page.number, page.size)
     return catalog.staff(ctx, page.number, page.size, sort=sort)
 
 
@@ -192,7 +189,6 @@ def replace_benefit_staff(ctx: Context, user_id: Id, body: StaffReplace) -> dict
 def list_benefit_services(
     ctx: Context, page: Page, paginate: CatalogPaginate = True, sort: BenefitServiceSort = "default"
 ) -> dict:
-    # [删除-旧] return catalog.services(ctx, page.number, page.size)
     return catalog.services(ctx, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
@@ -214,7 +210,6 @@ def list_benefit_service_versions(
     paginate: CatalogPaginate = True,
     sort: BenefitVersionSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.versions(ctx, id, page.number, page.size)
     return catalog.versions(ctx, id, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
@@ -244,7 +239,6 @@ def retire_benefit_service_version(ctx: Context, id: Id, version_id: Id) -> dict
 def list_benefit_packages(
     ctx: Context, page: Page, paginate: CatalogPaginate = True, sort: BenefitPackageSort = "default"
 ) -> dict:
-    # [删除-旧] return catalog.packages(ctx, page.number, page.size)
     return catalog.packages(ctx, page.number, page.size, paginate_results=paginate, sort=sort)
 
 
@@ -281,7 +275,6 @@ def list_ops_benefit_purchases(
     paginate: PaginateOnly = True,
     sort: BenefitPurchaseSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.purchases(ctx, page.number, page.size, status=status)
     return catalog.purchases(ctx, page.number, page.size, status=status, sort=sort)
 
 
@@ -322,7 +315,6 @@ def list_my_enterprises(
     paginate: Paginate = True,
     sort: BenefitNameSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.enterprises(ctx, page.number, page.size, own=True)
     return catalog.enterprises(
         ctx, page.number, page.size, own=True, sort=sort, paginate_results=paginate
     )
@@ -336,7 +328,6 @@ def list_enterprise_members(
     paginate: PaginateOnly = True,
     sort: BenefitNameSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.members(ctx, enterprise_id, page.number, page.size)
     return catalog.members(ctx, enterprise_id, page.number, page.size, sort=sort)
 
 
@@ -361,7 +352,6 @@ def list_enterprise_benefit_purchases(
     paginate: PaginateOnly = True,
     sort: BenefitPurchaseSort = "default",
 ) -> dict:
-    # [删除-旧] return catalog.purchases(ctx, page.number, page.size, enterprise_id, status=status)
     return catalog.purchases(ctx, page.number, page.size, enterprise_id, status=status, sort=sort)
 
 
@@ -406,7 +396,6 @@ def list_issued_benefit_grants(
     paginate: PaginateOnly = True,
     sort: BenefitInvitationSort = "default",
 ) -> dict:
-    # [删除-旧] return grants.issued_grants(ctx, enterprise_id, batch_id, status, page.number, page.size)
     return grants.issued_grants(
         ctx, enterprise_id, batch_id, status, page.number, page.size, sort=sort
     )
@@ -424,7 +413,6 @@ def list_benefit_invitations(
     paginate: PaginateOnly = True,
     sort: BenefitInvitationSort = "default",
 ) -> dict:
-    # [删除-旧] return grants.invitations(ctx, page.number, page.size)
     return grants.invitations(ctx, page.number, page.size, sort=sort)
 
 
@@ -443,7 +431,6 @@ def list_my_benefit_enterprises(
     paginate: Paginate = True,
     sort: BenefitNameSort = "default",
 ) -> dict:
-    # [删除-旧] return grants.enterprises(ctx, page.number, page.size)
     return grants.enterprises(ctx, page.number, page.size, sort=sort, paginate_results=paginate)
 
 
@@ -455,7 +442,6 @@ def list_my_benefit_plans(
     paginate: PaginateOnly = True,
     sort: BenefitPlanSort = "default",
 ) -> dict:
-    # [删除-旧] return grants.plans(ctx, enterprise_id, page.number, page.size)
     return grants.plans(ctx, enterprise_id, page.number, page.size, sort=sort)
 
 
@@ -494,7 +480,6 @@ def list_my_benefit_service_orders(
     paginate: PaginateOnly = True,
     sort: BenefitOrderSort = "default",
 ) -> dict:
-    # [删除-旧] return orders.orders(ctx, page.number, page.size, grant_id=grant_id, status=status)
     return orders.orders(ctx, page.number, page.size, grant_id=grant_id, status=status, sort=sort)
 
 

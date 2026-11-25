@@ -52,7 +52,7 @@ _claim_attempts: dict[int, tuple[float, int]] = {}
 _claim_rate_lock = Lock()
 
 
-# [新增] 发放列表和个人邀请使用一致的截止时间排序。
+# 发放列表和个人邀请使用一致的截止时间排序。
 def _grant_order(sort: BenefitInvitationSort):
     grant = BenefitGrant
     return {
@@ -215,7 +215,6 @@ class BenefitGrantService:
                     stmt = stmt.where(BenefitGrant.claim_expires_at > now)
             return paginate(
                 ctx.db,
-                # [删除-旧] stmt.order_by(BenefitGrant.id.desc()),
                 stmt.order_by(*_grant_order(sort)),
                 page,
                 size,
@@ -278,16 +277,7 @@ class BenefitGrantService:
         with ctx.db.begin():
             stmt = self.grant_sources().where(*self.invitation_filter(ctx, keys, now_utc()))
             total = ctx.db.scalar(select(func.count()).select_from(stmt.subquery()))
-            # [删除-旧] 默认按发放 ID 倒序，也可按领取截止时间排序。
-            # grant = BenefitGrant
-            # order = {
-            #     "default": (grant.id.desc(),),
-            #     "expires_at_asc": (grant.claim_expires_at.asc(), grant.id.desc()),
-            #     "expires_at_desc": (grant.claim_expires_at.desc(), grant.id.desc()),
-            # }[sort]
             rows = ctx.db.execute(
-                # [删除-旧] stmt.order_by(BenefitGrant.id.desc()).offset((page - 1) * size).limit(size)
-                # [删除-旧] stmt.order_by(*order).offset((page - 1) * size).limit(size)
                 stmt.order_by(*_grant_order(sort)).offset((page - 1) * size).limit(size)
             )
             items = []
@@ -390,7 +380,6 @@ class BenefitGrantService:
             "service_code": service.code,
             "service_version_id": version.id,
             "icon_key": item.icon_key,
-            # [删除-旧] **display(version, "name summary description_ref terms_ref fulfillment_mode"),
             **display(
                 version, "name summary description_ref terms_ref fulfillment_mode online_handler"
             ),
@@ -514,7 +503,7 @@ class BenefitGrantService:
     def plans(self, ctx, enterprise_id, page, size, *, sort: BenefitPlanSort = "default"):
         with ctx.db.begin():
             plans = self.grouped_plans(ctx.db, ctx.actor_id, enterprise_id)
-            # [新增] 先合并同一计划的卡片，再排序和切页。同名沿用原始顺序。
+            # 先合并同一计划的卡片，再排序和切页。同名沿用原始顺序。
             if sort != "default":
                 plans.sort(
                     key=lambda plan: plan["plan_name"].casefold(), reverse=sort == "title_desc"
@@ -548,7 +537,7 @@ class BenefitGrantService:
                 for card in plan["cards"]:
                     summary["status_counts"][card["status"]] += 1
             rows = list(summaries.values())
-            # [新增] 权益页的企业标签可读全量摘要，保留计划和卡片的计数。
+            # 权益页的企业标签可读全量摘要，保留计划和卡片的计数。
             if sort != "default":
                 rows.sort(
                     key=lambda row: row["display_name"].casefold(), reverse=sort == "name_desc"

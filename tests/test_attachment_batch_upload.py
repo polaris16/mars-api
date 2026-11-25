@@ -75,6 +75,34 @@ def _completion(grant, **options):
     }
 
 
+# [新增] 不同类型可在同一请求中授权、各自直传，再一起确认。
+def test_batch_accepts_mixed_media_types(memory_api):
+    client, owner, attachments = memory_api
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"photo"
+    video = bytes.fromhex("00000018") + b"ftypisom"
+    audio = b"RIFF" + bytes(4) + b"WAVE"
+    items = [
+        _image(photo),
+        _image(video, filename="短片.mp4", media_type="video", content_type="video/mp4"),
+        _image(audio, filename="录音.wav", media_type="audio", content_type="audio/wav"),
+    ]
+    invalid = client.post(authorize, headers=owner, json={"items": items, "media_type": "image"})
+    assert invalid.status_code == 422
+
+    grants = _batch(client, authorize, owner, items)
+    for item, grant, content in zip(items, grants, (photo, video, audio)):
+        assert grant["status"] == "upload_required"
+        assert grant["required_headers"]["Content-Type"] == item["content_type"]
+        _put(client, grant, content)
+    linked = _batch(client, complete, owner, [_completion(grant) for grant in grants])
+    assert all(result["status"] == "attached" for result in linked)
+    listing = client.get(attachments, headers=owner)
+    assert listing.status_code == 200, listing.text
+    assert {row["asset"]["media_type"] for row in listing.json()} == {"image", "video", "audio"}
+
+
 def test_nine_files_complete_in_two_business_calls_and_replay_at_capacity(memory_api, monkeypatch):
     client, owner, attachments = memory_api
     authorize = f"{attachments}/batch-upload-authorizations"

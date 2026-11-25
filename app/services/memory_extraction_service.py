@@ -492,7 +492,7 @@ class MemoryExtractionService:
         job: AIProcessingJob,
         verified: list[tuple[ExtractedElement, int | None]],
     ) -> dict:
-        # [新增] Worker 可能正在核验旧兜底元素，先锁所有者再更改元素记录。
+        # Worker 可能正在核验旧兜底元素，先锁所有者再更改元素记录。
         memory = db.get(MemorySession, job.session_id) if job.input_payload.get("draft_version_id") else None
         if memory is not None:
             lock_owner(db, memory.owner_user_id)
@@ -567,7 +567,7 @@ class MemoryExtractionService:
                     db, row, result, possible_locations=possible_locations,
                     locations_truncated=truncated, narrator_by_mention=narrator_by_mention,
                 )
-        # [新增] 版本化元素和它们的首次核验任务一同发布。
+        # 版本化元素和它们的首次核验任务一同发布。
         if memory is not None:
             schedule_material_validation(
                 db, memory.owner_user_id, memory.id, fragment_id=job.source_fragment_id,
@@ -640,7 +640,7 @@ class MemoryExtractionService:
             )
         db.add(fallback)
         db.flush()
-        # [新增] 兜底保留待核对原因并进入同一复验流程。
+        # 兜底保留待核对原因并进入同一复验流程。
         if fallback.draft_version_id is not None:
             fallback.verification_reason = "fallback"
             memory = db.get(MemorySession, job.session_id)
@@ -860,7 +860,6 @@ class MemoryExtractionService:
         created_at = AIProcessingJob.created_at
         ordering = created_at.asc() if sort == "created_at_asc" else created_at.desc()
         rows = db.scalars(
-            # [删除-旧] query.order_by(AIProcessingJob.created_at.desc(), AIProcessingJob.id.desc())
             query.order_by(ordering, AIProcessingJob.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -904,8 +903,7 @@ class MemoryExtractionService:
         verification_status: str | None = None,
         sort: IdSort = "default",
     ) -> MemoryElementPage:
-        # [删除-旧] self.memories._session_access(db, user.id, session_id)
-        # [新增] 共享读路径及其过滤条件均隐藏跨会话验证结论。
+        # 共享读路径及其过滤条件均隐藏跨会话验证结论。
         memory, _ = self.memories._session_access(db, user.id, session_id)
         shared = memory.owner_user_id != user.id
         invalidated = invalidated_verification_ids(db, user.id) if not shared and memory.visibility else set()
@@ -926,8 +924,7 @@ class MemoryExtractionService:
             (MemoryElement.element_type, element_type),
             (MemoryElement.review_status, review_status),
             (MemoryElement.origin, origin),
-            # [删除-旧] (MemoryElement.verification_status, verification_status),
-            # [新增] 过滤和序列化采用同一可见状态。
+            # 过滤和序列化采用同一可见状态。
             (effective_status, verification_status),
         ):
             if value is not None:
@@ -935,12 +932,10 @@ class MemoryExtractionService:
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
         ordering = MemoryElement.id.desc() if sort == "id_desc" else MemoryElement.id
         rows = db.scalars(
-            # [删除-旧] query.order_by(MemoryElement.id).offset((page - 1) * page_size).limit(page_size)
             query.order_by(ordering).offset((page - 1) * page_size).limit(page_size)
         )
         return MemoryElementPage(
-            # [删除-旧] items=[self.element_response(db, row) for row in rows],
-            # [新增] 共享读路径使用保守的核验状态。
+            # 共享读路径使用保守的核验状态。
             items=[self.element_response(db, row, shared=shared, invalidated=row.id in invalidated) for row in rows],
             page=page,
             page_size=page_size,
@@ -959,8 +954,7 @@ class MemoryExtractionService:
     def get_element(
         self, db: Session, user: User, session_id: int, element_id: int
     ) -> MemoryElementResponse:
-        # [删除-旧] return self.element_response(db, self._element(db, user.id, session_id, element_id))
-        # [新增] 只让所有者看到可能由其其他会话产生的核验结果。
+        # 只让所有者看到可能由其其他会话产生的核验结果。
         row = self._element(db, user.id, session_id, element_id)
         shared = db.get(MemorySession, session_id).owner_user_id != user.id
         invalidated = (not shared and row.verification_status == "verified"
@@ -968,8 +962,7 @@ class MemoryExtractionService:
         return self.element_response(db, row, shared=shared, invalidated=invalidated)
 
     @staticmethod
-    # [删除-旧] def element_response(db: Session, row: MemoryElement) -> MemoryElementResponse:
-    # [新增] 单个元素的序列化与列表保持相同的跨会话隐私边界。
+    # 单个元素的序列化与列表保持相同的跨会话隐私边界。
     def element_response(
         db: Session, row: MemoryElement, *, shared: bool = False, invalidated: bool = False,
     ) -> MemoryElementResponse:

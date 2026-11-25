@@ -25,7 +25,7 @@ class MemoryFragment(Base):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="t_memory_fragment_pkey"),
         UniqueConstraint("session_id", "sequence_no", name="uq_t_memory_fragment_session_sequence"),
-        # [新增] 软删除的片段仍保留请求键，防止旧请求重新创建素材。
+        # 软删除的片段仍保留请求键，防止旧请求重新创建素材。
         UniqueConstraint(
             "session_id",
             "created_by",
@@ -39,8 +39,6 @@ class MemoryFragment(Base):
             "sequence_no",
             postgresql_where=text("is_del = false"),
         ),
-        # [删除-旧] audio_asset_id 曾唯一，限制一个媒体对象只能对应一个片段；媒体对象现可复用。
-        # UniqueConstraint("audio_asset_id", name="uq_t_memory_fragment_audio_asset"),
         CheckConstraint(
             "source_type IN ('text', 'audio', 'video')", name="ck_t_memory_fragment_source_type"
         ),
@@ -61,7 +59,7 @@ class MemoryFragment(Base):
         comment="所属记忆会话 ID",
     )
     sequence_no = Column(Integer, nullable=False, comment="会话内片段顺序")
-    # [新增] 素材片段改为区分来源类型、提供者、文件对象和直接文本。
+    # 素材片段改为区分来源类型、提供者、文件对象和直接文本。
     contributor_id = Column(
         BigInteger,
         ForeignKey(
@@ -76,8 +74,6 @@ class MemoryFragment(Base):
         server_default=text("'audio'"),
         comment="来源类型：text/audio/video",
     )
-    # [删除-旧] audio_asset_id = Column(BigInteger, ForeignKey("t_media_asset.id", ondelete="CASCADE", name="fk_t_memory_fragment_audio_asset"), nullable=False, comment="语音媒体对象ID")
-    # [新增] 文件引用可空，以支持直接输入文本。
     source_asset_id = Column(
         BigInteger,
         ForeignKey(
@@ -91,7 +87,7 @@ class MemoryFragment(Base):
     )
     transcript_raw = Column(Text, nullable=True, comment="原始 ASR 转写文本，可由原素材提供者补交")
     transcript_edited = Column(Text, nullable=True, comment="用户修订后的转写文本")
-    # [新增] 没有提交幂等请求头的片段保留空值。
+    # 没有提交幂等请求头的片段保留空值。
     client_request_key = Column(Uuid, nullable=True, comment="客户端保存请求的幂等键")
     client_request_hash = Column(String(64), nullable=True, comment="保存请求内容的 SHA-256 摘要")
     recorded_at = Column(

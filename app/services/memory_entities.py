@@ -248,7 +248,7 @@ class MemoryEntityService:
             key = (mention.entity_type, name, mention.relation_type)
             if key in seen or name not in result.source_quote or "\x00" in name:
                 continue
-            # [修改] 引句重复时保留候选和多个出处，等所有者明确位置。
+            # 引句重复时保留候选和多个出处，等所有者明确位置。
             if not element.draft_references and not possible_locations:
                 continue
             seen.add(key)
@@ -269,8 +269,7 @@ class MemoryEntityService:
                     location_status="ambiguous", possible_locations=possible_locations,
                     locations_truncated=locations_truncated,
                 )
-            # [删除-旧] digest = fingerprint([source_revision_id, result.summary, result.source_quote, key])
-            # [修改] 重新生成的摘要不参与身份确认，历史结论按引用的证据比对。
+            # 重新生成的摘要不参与身份确认，历史结论按引用的证据比对。
             candidate = MemoryEntityCandidate(
                 element_id=element.id, entity_type=mention.entity_type, mention_text=name,
                 relation_type=mention.relation_type, narrator_user_id=narrator_id,
@@ -313,7 +312,7 @@ class MemoryEntityService:
                 entity for entity in matches
                 if proof is not None and entity.attributes.get("identity_quote") == proof
             ]
-            # [修改] 旧元素退役后，其已核对的同片段证据仍可用于身份继承。
+            # 旧元素退役后，其已核对的同片段证据仍可用于身份继承。
             prior_identity = (
                 self._previous_identity(db, element, candidate, owner_id, anchor)
                 if not relative or narrator_id is not None else None
@@ -378,10 +377,7 @@ class MemoryEntityService:
             query = query.where(LifeEntity.entity_type == entity_type)
         if element_id is not None:
             query = query.where(MemoryElement.id == element_id)
-        # [删除-旧] summaries = query.with_only_columns(
-        #     LifeEntity.id, LifeEntity.entity_type, func.min(LifeEntityAlias.alias_name).label("display_name")
-        # ).group_by(LifeEntity.id, LifeEntity.entity_type)
-        # [新增] 使用当前会话证据可见的显示名称排序。
+        # 使用当前会话证据可见的显示名称排序。
         display_name = func.min(LifeEntityAlias.alias_name).label("display_name")
         summaries = query.with_only_columns(
             LifeEntity.id,
@@ -396,7 +392,6 @@ class MemoryEntityService:
         }[sort]
         total = db.scalar(select(func.count()).select_from(summaries.subquery())) or 0
         items = db.execute(
-            # [删除-旧] summaries.order_by(LifeEntity.id).offset((page - 1) * page_size).limit(page_size)
             summaries.order_by(*order).offset((page - 1) * page_size).limit(page_size)
         ).mappings()
         return {"items": list(items), "page": page, "page_size": page_size, "total": total}
@@ -450,7 +445,6 @@ class MemoryEntityService:
             query = query.where(MemoryEntityCandidate.element_id == element_id)
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
         items = []
-        # [删除-旧] for row in db.scalars(query.order_by(MemoryEntityCandidate.id).offset((page - 1) * page_size).limit(page_size)):
         ordering = (
             MemoryEntityCandidate.id.desc() if sort == "id_desc" else MemoryEntityCandidate.id
         )
@@ -509,7 +503,7 @@ class MemoryEntityService:
             candidate = db.scalar(self._candidates(session_id).where(MemoryEntityCandidate.id == candidate_id))
             if candidate is None:
                 raise HTTPException(409, "候选已失效或不存在")
-            # [修改] 沿用已有请求指纹，只有选了位置时才加入新字段。
+            # 沿用已有请求指纹，只有选了位置时才加入新字段。
             excluded_fields = (
                 {"evidence_location_index"} if body.evidence_location_index is None else set()
             )
@@ -552,7 +546,7 @@ class MemoryEntityService:
                 )
                 db.add(resolution)
                 db.flush()
-                # [新增] 实体身份变化会改变已有事件的核验依据。
+                # 实体身份变化会改变已有事件的核验依据。
                 schedule_material_validation(
                     db, user.id, memory.id, fragment_id=element.source_fragment_id,
                     actor_id=user.id, reason="entity_resolution_changed",

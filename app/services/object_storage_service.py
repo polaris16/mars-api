@@ -96,8 +96,7 @@ class ObjectStorageService:
             "X-Amz-SignedHeaders": signed_headers,
         }
         canonical_query = urlencode(sorted(params.items()), quote_via=quote, safe="-_.~")
-        # [删除-旧] canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers)).rstrip("\n")
-        # [修改] SigV4 要求规范请求头块以换行结尾，后续字段另起一行。
+        # SigV4 要求规范请求头块以换行结尾，后续字段另起一行。
         canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers))
         canonical_request = "\n".join(
             (
@@ -296,12 +295,12 @@ class ObjectStorageService:
             raise HTTPException(status_code=502, detail="无法连接对象存储校验文件") from exc
         return size, content_type, digest.hexdigest(), bytes(prefix)
 
-    # [新增] 文本抽取仅读取已确认对象的有限字节数。
+    # 文本抽取仅读取已确认对象的有限字节数。
     def read_text_source(self, key: str, max_bytes: int, timeout: float) -> bytes:
         """Read a bounded extractable text object without exposing a signed URL to clients."""
         return self.read_object(key, max_bytes, timeout)
 
-    # [新增] 图片校验复用受限媒体读取路径。
+    # 图片校验复用受限媒体读取路径。
     def read_object(self, key: str, max_bytes: int, timeout: float) -> bytes:
         try:
             if self.mode == "mock":
@@ -327,7 +326,7 @@ class ObjectStorageService:
             return f"{self.public_base_url}/api/mock-storage/download/{token}"
         return self._presign("GET", key, expires_in)
 
-    # [新增] Worker 将已生成的成图写入后端分配的不可覆盖对象键。
+    # Worker 将已生成的成图写入后端分配的不可覆盖对象键。
     def write_generated_image(self, key: str, data: bytes, content_type: str) -> None:
         try:
             if self.mode == "mock":

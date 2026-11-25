@@ -32,11 +32,7 @@ from app.services.memory_contributor_service import MemoryContributorService
 from app.services.memory_entities import MemoryEntityService
 from app.services.memory_versions import decode_paragraphs, fingerprint
 
-# [删除-旧] DATE_WORD = re.compile(
-#     r"(?<!\d)(?P<year>\d{4})(?:年(?:(?P<month>\d{1,2})月(?:(?P<day>\d{1,2})[日号])?)?"
-#     r"|-(?P<iso_month>\d{2})-(?P<iso_day>\d{2}))(?!\d)"
-# )
-# [修改] ASR 可能在数字和年月日之间留空格。
+# ASR 可能在数字和年月日之间留空格。
 DATE_WORD = re.compile(
     r"(?<!\d)(?P<year>\d{4})(?:[ \t]*年(?:[ \t]*(?P<month>\d{1,2})[ \t]*月"
     r"(?:[ \t]*(?P<day>\d{1,2})[ \t]*[日号])?)?"
@@ -44,7 +40,7 @@ DATE_WORD = re.compile(
 )
 DATE_CONNECTOR = re.compile(r"\s*(?:至|到|[—–~～-])\s*")
 NEGATED_DATE = re.compile(r"(?:不是|并非|不在|不可能是|排除|不是在)\s*$")
-# [新增] 以日期粒度解释明确的单边边界，含糊的「前后」交回待核对。
+# 以日期粒度解释明确的单边边界，含糊的「前后」交回待核对。
 AFTER_DATE = re.compile(r"\s*(?:结束\s*(?:以后|之后|后)|以后|之后|过后)")
 BEFORE_DATE = re.compile(r"\s*(?:以前|之前|前(?![后往去进]))")
 SINCE_DATE = re.compile(r"\s*(?:以来|起(?![草身步诉飞火楼]))")
@@ -85,7 +81,6 @@ class Claim:
     anchor: EventAnchor
 
 
-# [删除-旧] def current_records(db: Session, owner_id: int, element_id: int | None = None) -> dict[int, Record]:
 def current_records(
     db: Session, owner_id: int, element_id: int | None = None, *, session_id: int | None = None,
 ) -> dict[int, Record]:
@@ -149,7 +144,7 @@ def current_records(
     )
     if element_id is not None:
         query = query.where(MemoryElement.id == element_id)
-    # [新增] 单会话图谱仅查询指定会话的现行版本。
+    # 单会话图谱仅查询指定会话的现行版本。
     if session_id is not None:
         query = query.where(MemorySession.id == session_id)
     contributors = MemoryContributorService()
@@ -260,10 +255,7 @@ def value_key(value: dict) -> dict:
 
 
 def compatible(left: dict, right: dict) -> bool:
-    # [删除-旧] if "entity_id" in left:
-    #     return left["entity_id"] == right.get("entity_id")
-    # return left["time_start"] <= right["time_end"] and right["time_start"] <= left["time_end"]
-    # [修改] 只有可比较的边界能证明两个时间范围互斥。
+    # 只有可比较的边界能证明两个时间范围互斥。
     if "entity_id" in left or "entity_id" in right:
         return left.get("entity_id") == right.get("entity_id")
     left_start, left_end = left["time_start"], left["time_end"]
@@ -278,7 +270,7 @@ def value_label(value: dict) -> str:
     if "entity_id" in value:
         return value["name"]
     start, end = value["time_start"], value["time_end"]
-    # [新增] 保留选项的开放方向，不把边界显示成事件发生日。
+    # 保留选项的开放方向，不把边界显示成事件发生日。
     if start is None:
         return f"截至 {end}" if end is not None else "时间待核对"
     if end is None:
@@ -323,7 +315,7 @@ def _time_source_mismatch(element: MemoryElement, source_time: dict, quote: str)
 
 
 def _context_without_dates(quote: str) -> str:
-    """[新增] 年份和它的已识别边界属于待核对的取值，归组时一起排除。"""
+    """年份和它的已识别边界属于待核对的取值，归组时一起排除。"""
     parts = []
     end = 0
     for item in DATE_WORD.finditer(quote):
@@ -356,8 +348,7 @@ def collect_claims(
         return [], "source_unconfirmed"
     if row.id in pending:
         return [], "entity_unconfirmed"
-    # [删除-旧] entities = MemoryEntityService.element_refs(db, row.id)
-    # [新增] 单会话候选由当前会话引句提供，避免使用跨会话归一后的身份。
+    # 单会话候选由当前会话引句提供，避免使用跨会话归一后的身份。
     entities = visible_entities if visible_entities is not None else MemoryEntityService.element_refs(db, row.id)
     locations = place_values(quote, entities)
     values = list(locations)
@@ -365,7 +356,7 @@ def collect_claims(
     reason = None
     if parsed_time is not None:
         values.append(("event_time", parsed_time))
-        # [新增] 引句仍可作证，抽错或推断过细的元素保持待核对。
+        # 引句仍可作证，抽错或推断过细的元素保持待核对。
         if _time_source_mismatch(row, parsed_time, quote):
             reason = "time_source_mismatch"
     if (
@@ -380,7 +371,6 @@ def collect_claims(
     people = sorted({ref["id"] for ref in entities if ref["entity_type"] == "person"})
     speakers = {ref.get("narrator_user_id") for ref in refs}
     narrator = next(iter(speakers)) if len(speakers) == 1 else None
-    # [删除-旧] context = DATE_WORD.sub("", quote)
     context = _context_without_dates(quote)
     for _, place in sorted(locations, key=lambda pair: len(pair[1]["name"]), reverse=True):
         context = context.replace(place["name"], "")
@@ -409,7 +399,6 @@ def collect_claims(
         )
         for field, value in values
     ]
-    # [删除-旧] return claims, None
     return claims, reason
 
 
@@ -452,7 +441,7 @@ def _conflicting_pairs(claims: list[Claim]) -> set[tuple[int, int]]:
 
 
 def _related_anchors(left: EventAnchor, right: EventAnchor) -> bool:
-    """[新增] 同一叙述主体及共享的独立上下文只构成提问线索。"""
+    """同一叙述主体及共享的独立上下文只构成提问线索。"""
     if left.element_type != right.element_type or not (
         (left.narrator_id is not None and left.narrator_id == right.narrator_id)
         or set(left.people).intersection(right.people)
@@ -504,13 +493,11 @@ def group_claims(
     groups: dict[tuple[str, str], MemoryConflictGroup],
     *, visible_entities: dict[int, list[dict]] | None = None,
 ) -> tuple[dict[str, EventClaims], dict[int, str | None], set[int]]:
-    """[新增] 同一组的各描述直接相似才加入，按当前证据尽量保留原归组键。"""
-    # [删除-旧] pending = pending_entities(db, list(records))
+    """同一组的各描述直接相似才加入，按当前证据尽量保留原归组键。"""
     pending = pending_entities(db, list(records)) if visible_entities is None else set()
     reasons = {}
     exact = defaultdict(list)
     for element_id, record in records.items():
-        # [删除-旧] claims, reasons[element_id] = collect_claims(db, record, pending)
         local_refs = visible_entities.get(element_id, []) if visible_entities is not None else None
         claims, reasons[element_id] = collect_claims(db, record, pending, visible_entities=local_refs)
         for claim in claims:
@@ -582,7 +569,7 @@ def current_group_fingerprint(
     events: dict[str, EventClaims],
     groups: dict[tuple[str, str], MemoryConflictGroup],
 ) -> str | None:
-    """[新增] 旧题必须对应现行证据，而且事件归属已足以核对具体属性。"""
+    """旧题必须对应现行证据，而且事件归属已足以核对具体属性。"""
     event = events.get(group.event_key)
     if event is None or groups.get((group.event_key, group.field_key)) is None:
         return None

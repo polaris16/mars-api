@@ -36,7 +36,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     application = FastAPI(title="Mars API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
-    # [新增] Mock 直传供本地 Web 前端使用；生产 S3 模式不自动开放开发源站。
+    # Mock 直传供本地 Web 前端使用；生产 S3 模式不自动开放开发源站。
     if settings.object_storage_mode == "mock":
         origins = [
             origin.strip()

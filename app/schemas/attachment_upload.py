@@ -26,7 +26,7 @@ class AttachmentUploadItem(BaseModel):
             strip_whitespace=True, min_length=1, max_length=255, pattern=r"^[^\x00]+$"
         ),
     ]
-    media_type: Literal["audio", "image", "video"]
+    media_type: Literal["audio", "image", "video"] = Field(description="当前文件的媒体类别")
     content_type: Annotated[
         str,
         StringConstraints(
@@ -44,7 +44,7 @@ class AttachmentCompleteItem(UploadCompleteRequest):
     asset_id: int = Field(gt=0, le=PG_BIGINT_MAX)
     caption: Annotated[str, StringConstraints(max_length=200, pattern=r"^[^\x00]*$")] | None = None
     sort_order: int = Field(default=0, ge=0, le=PG_INTEGER_MAX)
-    # [新增] 仅在询问模式下提交对重复项的决定和共享上传的代表项。
+    # 仅在询问模式下提交对重复项的决定和共享上传的代表项。
     duplicate_action: Literal["skip", "keep"] | None = None
     representative_client_file_id: UUID | None = None
 
@@ -52,8 +52,10 @@ class AttachmentCompleteItem(UploadCompleteRequest):
 class AttachmentUploadBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    items: list[AttachmentUploadItem] = Field(min_length=1, max_length=9)
-    # [新增] 由 App 显式启用询问，默认沿用已有请求的自动复用。
+    items: list[AttachmentUploadItem] = Field(
+        min_length=1, max_length=9, description="每项单独指定媒体类别，同一批可混传图片、视频和音频"
+    )
+    # 由 App 显式启用询问，默认沿用已有请求的自动复用。
     duplicate_mode: Literal["reuse", "ask"] = "reuse"
 
     @field_validator("items")
@@ -68,7 +70,7 @@ class AttachmentCompleteBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[AttachmentCompleteItem] = Field(min_length=1, max_length=9)
-    # [新增] 与批量授权的询问模式一致。
+    # 与批量授权的询问模式一致。
     duplicate_mode: Literal["reuse", "ask"] = "reuse"
 
     @field_validator("items")
@@ -122,7 +124,7 @@ class AttachmentUploadReused(BaseModel):
     asset_id: int
 
 
-# [新增] 授权重放已成功的操作时返回原附件关联。
+# 授权重放已成功的操作时返回原附件关联。
 class AttachmentAlreadyBound(BaseModel):
     client_file_id: UUID
     status: Literal["already_attached"]
@@ -130,7 +132,7 @@ class AttachmentAlreadyBound(BaseModel):
     attachment_id: int
 
 
-# [新增] 重复授权结果携带可复用的素材和识别原关联或代表项所需的信息。
+# 重复授权结果携带可复用的素材和识别原关联或代表项所需的信息。
 class AttachmentUploadDuplicate(BaseModel):
     client_file_id: UUID
     status: Literal["duplicate"]
@@ -144,7 +146,6 @@ class AttachmentUploadDuplicate(BaseModel):
 class AttachmentUploadBatchResponse(BaseModel):
     items: list[
         Annotated[
-            # [删除-旧] AttachmentUploadRequired | AttachmentUploadReused | AttachmentItemFailed,
             AttachmentUploadRequired
             | AttachmentUploadReused
             | AttachmentUploadDuplicate
@@ -162,7 +163,7 @@ class AttachmentBound(BaseModel):
     attachment_id: int
 
 
-# [新增] 确认时可能发现新重复，也可能接受明确的跳过决定。
+# 确认时可能发现新重复，也可能接受明确的跳过决定。
 class AttachmentDuplicateDecision(BaseModel):
     client_file_id: UUID
     status: Literal["duplicate", "skipped"]
@@ -171,7 +172,6 @@ class AttachmentDuplicateDecision(BaseModel):
 
 
 class AttachmentCompleteBatchResponse(BaseModel):
-    # [删除-旧] items: list[Annotated[AttachmentBound | AttachmentItemFailed, Field(discriminator="status")]]
     items: list[
         Annotated[
             AttachmentBound | AttachmentDuplicateDecision | AttachmentItemFailed,

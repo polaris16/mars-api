@@ -39,7 +39,7 @@ RECIPROCAL_CODES = {
     "sibling_of": "sibling_of",
     "related_to": "related_to",
 }
-# [新增] 联系人双方使用相同关系码，亲属仍使用既有的反向映射。
+# 联系人双方使用相同关系码，亲属仍使用既有的反向映射。
 RECIPROCAL_TYPES = {"family": RECIPROCAL_CODES, "contact": {"contact_of": "contact_of"}}
 ALLOWED_CODES = {
     "family": set(RECIPROCAL_CODES),
@@ -64,7 +64,7 @@ class UserRelationshipService:
 
     @classmethod
     def _effective_status(cls, row: UserRelationship, now: datetime) -> str:
-        # [新增] 邀请等待时间与关系有效期分开，确认后只使用关系有效期。
+        # 邀请等待时间与关系有效期分开，确认后只使用关系有效期。
         if row.status == "pending" and row.invitation_expires_at is not None:
             if cls._utc(row.invitation_expires_at) <= now:
                 return "expired"
@@ -80,7 +80,7 @@ class UserRelationshipService:
             rows, now
         )
 
-    # [新增] 会话授权和关系生命周期复用同一个双向确认规则。
+    # 会话授权和关系生命周期复用同一个双向确认规则。
     @classmethod
     def is_confirmed_pair(cls, rows: list[UserRelationship], now: datetime) -> bool:
         if len(rows) != 2:
@@ -89,14 +89,12 @@ class UserRelationshipService:
         codes = RECIPROCAL_TYPES.get(first.relationship_type, {})
         return (
             all(
-                # [删除-旧] row.relationship_type == "family" and cls._effective_status(row, now) == "active"
                 row.relationship_type == first.relationship_type
                 and cls._effective_status(row, now) == "active"
                 for row in rows
             )
             and first.subject_user_id == second.related_user_id
             and first.related_user_id == second.subject_user_id
-            # [删除-旧] and RECIPROCAL_CODES.get(first.relation_code) == second.relation_code
             and codes.get(first.relation_code) == second.relation_code
         )
 
@@ -132,15 +130,7 @@ class UserRelationshipService:
             .group_by(UserRelationship.relationship_pair_id)
             .subquery()
         )
-        # [删除-旧] total = session.scalar(select(func.count()).select_from(group_order)) or 0
-        # page_groups = (
-        #     select(group_order)
-        #     .order_by(group_order.c.latest_created_at.desc(), group_order.c.latest_id.desc())
-        #     .offset((page - 1) * page_size)
-        #     .limit(page_size)
-        #     .subquery()
-        # )
-        # [修改] 昵称排序在切页前使用调用者可见方向的对方昵称。
+        # 昵称排序在切页前使用调用者可见方向的对方昵称。
         total = session.scalar(select(func.count()).select_from(group_order)) if paginate else 0
         if sort != "default":
             relation = UserRelationship
@@ -181,15 +171,11 @@ class UserRelationshipService:
                     UserRelationship.is_del.is_(False),
                 )
                 .order_by(
-                    # [删除-旧] page_groups.c.latest_created_at.desc(),
-                    # page_groups.c.latest_id.desc(),
                     *self._group_order(page_groups, sort),
                     UserRelationship.id.desc(),
                 )
             ).all()
         )
-        # [删除-旧] For a confirmed family pair return this user's own directional row once;
-        # for a one-way agent relation or incoming invitation return its sole row.
         # 双向关系返回当前用户方向。待确认邀请和单向关系只返回已保存的一条。
         groups: dict[uuid.UUID, list[UserRelationship]] = defaultdict(list)
         for row in rows:
@@ -210,14 +196,13 @@ class UserRelationshipService:
             result.append(
                 RelationshipRecordResponse.model_validate(row).model_copy(update={"status": status})
             )
-        # [删除-旧] return RelationshipListResponse(items=result, page=page, page_size=page_size, total=total)
         if not paginate:
             page, page_size, total = 1, len(result), len(result)
         return RelationshipListResponse(
             items=result, page=page, page_size=page_size, total=total or 0
         )
 
-    # [新增] 显式昵称排序忽略大小写，空昵称始终放在最后。
+    # 显式昵称排序忽略大小写，空昵称始终放在最后。
     @staticmethod
     def _nickname_key() -> ColumnElement[str]:
         return func.lower(func.nullif(func.trim(User.display_name), ""))
@@ -234,7 +219,7 @@ class UserRelationshipService:
             return cls._nickname_order(groups.c.nickname, sort), groups.c.latest_id.desc()
         return groups.c.latest_created_at.desc(), groups.c.latest_id.desc()
 
-    # [新增] 列表、候选和申请历史使用相同的等待期限与关系期限。
+    # 列表、候选和申请历史使用相同的等待期限与关系期限。
     @staticmethod
     def _invitation_in_time(now: datetime) -> ColumnElement[bool]:
         relation = UserRelationship
@@ -266,7 +251,7 @@ class UserRelationshipService:
             .exists(),
         )
 
-    # [新增] 联系人与待处理申请按生效条件过滤，再计算总数和分页。
+    # 联系人与待处理申请按生效条件过滤，再计算总数和分页。
     def list_contacts(
         self,
         session: Session,
@@ -293,43 +278,21 @@ class UserRelationshipService:
                 relation.relation_code == "contact_of",
                 relation.is_del.is_(False),
                 User.is_del.is_(False),
-                # [删除-旧] or_(relation.valid_until.is_(None), relation.valid_until > now),
             )
         )
         if view == "active":
-            # [删除-旧] inverse = aliased(relation)
-            # query = query.where(
-            #     relation.status == "active",
-            #     or_(relation.valid_from.is_(None), relation.valid_from <= now),
-            #     select(inverse.id)
-            #     .where(
-            #         inverse.relationship_pair_id == relation.relationship_pair_id,
-            #         inverse.subject_user_id == relation.related_user_id,
-            #         inverse.related_user_id == relation.subject_user_id,
-            #         inverse.relationship_type == "contact",
-            #         inverse.relation_code == "contact_of",
-            #         inverse.status == "active",
-            #         inverse.is_del.is_(False),
-            #         or_(inverse.valid_from.is_(None), inverse.valid_from <= now),
-            #         or_(inverse.valid_until.is_(None), inverse.valid_until > now),
-            #     )
-            #     .exists(),
-            # ).order_by(func.lower(User.display_name).asc().nulls_last(), relation.id.asc())
             query = query.where(self._current_contact(now)).order_by(
                 func.lower(User.display_name).asc().nulls_last(), relation.id.asc()
             )
         else:
             query = query.where(
                 relation.status == "pending",
-                # [删除-旧] or_(relation.invitation_expires_at.is_(None), relation.invitation_expires_at > now),
                 self._invitation_in_time(now),
             ).order_by(relation.created_at.desc(), relation.id.desc())
         if keyword and (keyword := keyword.strip()):
             query = query.where(User.display_name.icontains(keyword, autoescape=True))
 
-        # [删除-旧] total = session.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
-        # rows = session.execute(query.offset((page - 1) * page_size).limit(page_size))
-        # [修改] 查询生效的联系人时，先按指定昵称顺序排列，再决定是否切页。
+        # 查询生效的联系人时，先按指定昵称顺序排列，再决定是否切页。
         if view == "active" and sort != "default":
             query = query.order_by(None).order_by(
                 self._nickname_order(self._nickname_key(), sort), relation.id.asc()
@@ -348,12 +311,12 @@ class UserRelationshipService:
             )
             for row, contact_id, name, avatar in rows
         ]
-        # [新增] 全量响应沿用分页结构，计数取实际结果。
+        # 全量响应沿用分页结构，计数取实际结果。
         if not paginate:
             page, page_size, total = 1, len(items), len(items)
         return ContactListResponse(items=items, page=page, page_size=page_size, total=total or 0)
 
-    # [新增] 只投影供 App 选择目标所需的资料，关系过滤先于分页。
+    # 只投影供 App 选择目标所需的资料，关系过滤先于分页。
     def search_contact_candidates(
         self, session: Session, user_id: int, body: ContactSearchRequest
     ) -> ContactSearchResponse:
@@ -389,7 +352,7 @@ class UserRelationshipService:
             User.is_del.is_(False), User.id != user_id, matches, ~blocked
         )
         total = session.scalar(select(func.count()).select_from(query.subquery()))
-        # [新增] 手机号精确命中优先，显式排序只改变组内昵称顺序。
+        # 手机号精确命中优先，显式排序只改变组内昵称顺序。
         nickname_order = (
             func.lower(User.display_name).asc().nulls_last()
             if body.sort == "default"
@@ -397,7 +360,6 @@ class UserRelationshipService:
         )
         rows = session.execute(
             query.order_by(
-                # [删除-旧] phone_match.desc(), func.lower(User.display_name).asc().nulls_last(), User.id
                 phone_match.desc(),
                 nickname_order,
                 User.id,
@@ -412,13 +374,13 @@ class UserRelationshipService:
             total=total or 0,
         )
 
-    # [新增] 只取发起方向，已通过的申请在解除好友后仍保留原处理结果。
+    # 只取发起方向，已通过的申请在解除好友后仍保留原处理结果。
     def list_contact_requests(
         self,
         session: Session,
         user_id: int,
         direction: ContactRequestDirection,
-        desired_status: ContactRequestStatus | None,
+        desired_statuses: tuple[ContactRequestStatus, ...],
         page: int,
         page_size: int,
         *,
@@ -461,14 +423,13 @@ class UserRelationshipService:
                 relation.is_del.is_(False),
             )
         )
-        if desired_status is not None:
-            query = query.where(request_status == desired_status)
+        # 分页前按对外状态筛选，自动过期的申请归入 expired。
+        query = query.where(request_status.in_(desired_statuses))
         total = session.scalar(select(func.count()).select_from(query.subquery()))
         created_at = (
             relation.created_at.asc() if sort == "created_at_asc" else relation.created_at.desc()
         )
         rows = session.execute(
-            # [删除-旧] query.order_by(relation.created_at.desc(), relation.id.desc())
             query.order_by(created_at, relation.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -547,13 +508,11 @@ class UserRelationshipService:
                     UserRelationship.is_del.is_(False),
                 )
             ).all()
-            # [删除-旧] if body.relationship_type == "family":
             if body.relationship_type in RECIPROCAL_TYPES:
                 groups: dict[uuid.UUID, list[UserRelationship]] = defaultdict(list)
                 for row in existing:
                     groups[row.relationship_pair_id].append(row)
                 duplicate = any(row.status == "pending" for row in existing) or any(
-                    # [删除-旧] self.is_confirmed_family_pair(group, now) for group in groups.values()
                     self.is_confirmed_pair(group, now)
                     for group in groups.values()
                 )
@@ -602,9 +561,6 @@ class UserRelationshipService:
             now = datetime.now(timezone.utc)
             if self._effective_status(row, now) == "expired":
                 raise HTTPException(status_code=409, detail="关系邀请已过期")
-            # [删除-旧] inverse_code = RECIPROCAL_CODES.get(row.relation_code)
-            # [删除-旧] if row.relationship_type == "family" and inverse_code is None:
-            # [删除-旧]     raise HTTPException(status_code=409, detail="亲属关系方向无效，请重新发起邀请")
             codes = RECIPROCAL_TYPES.get(row.relationship_type)
             inverse_code = codes.get(row.relation_code) if codes else None
             if codes is not None and inverse_code is None:
@@ -613,14 +569,13 @@ class UserRelationshipService:
             row.status = "active"
             row.accepted_at = now
             row.valid_from = now
-            # [新增] 好友确认后不再沿用申请截止时间，旧入口的期限只约束等待确认。
+            # 好友确认后不再沿用申请截止时间，旧入口的期限只约束等待确认。
             if row.relationship_type == "contact":
                 row.invitation_expires_at = None
                 row.valid_until = None
             row.updated_at = now
             row.updated_by = user.id
             result = [row]
-            # [删除-旧] if row.relationship_type == "family":
             if inverse_code is not None:
                 inverse = UserRelationship(
                     relationship_pair_id=row.relationship_pair_id,
@@ -684,7 +639,7 @@ class UserRelationshipService:
             )
             if pair_id is None:
                 raise self._not_found()
-            # [修改] 与接受邀请共用原邀请行的锁，再用新查询读出可能刚写入的反向关系。
+            # 与接受邀请共用原邀请行的锁，再用新查询读出可能刚写入的反向关系。
             session.scalar(
                 select(UserRelationship.id)
                 .where(
@@ -713,13 +668,12 @@ class UserRelationshipService:
             now = datetime.now(timezone.utc)
             current_status = self._effective_status(row, now)
             if current_status == "pending":
-                # [新增] 发起方可撤回邀请，接收方仍通过拒绝接口处理。
+                # 发起方可撤回邀请，接收方仍通过拒绝接口处理。
                 if row.initiated_by_user_id != user_id:
                     raise HTTPException(status_code=403, detail="只有发起人可以撤回邀请")
                 if len(pair) != 1:
                     raise HTTPException(status_code=409, detail="邀请组记录不一致")
             elif current_status == "active":
-                # [删除-旧] if len(pair) > 1 and not self.is_confirmed_family_pair(pair, now):
                 if len(pair) > 1 and not self.is_confirmed_pair(pair, now):
                     raise HTTPException(status_code=409, detail="关系组记录不一致")
                 pair = [member for member in pair if member.status == "active"]
@@ -730,8 +684,7 @@ class UserRelationshipService:
                 member.revoked_at = now
                 member.updated_at = now
                 member.updated_by = user_id
-            # [新增] 一次关系撤回可影响两位所有者的素材，按固定顺序登记复验。
-            # [删除-旧] if current_status == "active" and row.relationship_type == "family":
+            # 一次关系撤回可影响两位所有者的素材，按固定顺序登记复验。
             if current_status == "active" and row.relationship_type in RECIPROCAL_TYPES:
                 affected = session.execute(
                     select(MemorySession.owner_user_id, MemorySession.id)

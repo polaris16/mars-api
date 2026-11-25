@@ -75,7 +75,7 @@ def active_draft(db: Session, source_id: int) -> MemoryDraftVersion | None:
 
 def retire_elements(db: Session, fragment_id: int, owner_id: int) -> None:
     """当前结果失效，旧元素和确认记录继续用于审计与重跑比对。"""
-    # [新增] 与核验 Worker 共用所有者锁，先锁所有者再更新元素。
+    # 与核验 Worker 共用所有者锁，先锁所有者再更新元素。
     memory = db.execute(select(MemorySession.id, MemorySession.owner_user_id).join(
         MemoryFragment, MemoryFragment.session_id == MemorySession.id,
     ).where(MemoryFragment.id == fragment_id)).one_or_none()
@@ -86,7 +86,7 @@ def retire_elements(db: Session, fragment_id: int, owner_id: int) -> None:
         .where(MemoryElement.source_fragment_id == fragment_id, MemoryElement.is_del.is_(False))
         .values(is_del=True, updated_by=owner_id)
     )
-    # [新增] 失效引用与复验任务一同提交。
+    # 失效引用与复验任务一同提交。
     if memory is not None:
         schedule_material_validation(
             db, memory.owner_user_id, memory.id, fragment_id=fragment_id,

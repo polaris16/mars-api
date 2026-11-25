@@ -21,7 +21,7 @@ Sha256 = Annotated[str, StringConstraints(pattern=r"^[A-Fa-f0-9]{64}$")]
 PG_INTEGER_MAX = (1 << 31) - 1
 PG_BIGINT_MAX = (1 << 63) - 1
 MemoryVisibility = Literal["public", "private", "secret"]
-# [新增] 会话列表兼容早期通过 order 指定方向的调用。
+# 会话列表兼容早期通过 order 指定方向的调用。
 SessionSort = Literal[
     "default",
     "last_recorded_at",
@@ -171,10 +171,10 @@ class MediaAssetPage(PageResponse):
 
 
 class FragmentCreate(NarrationInput):
-    # [保留兼容] 原录音客户端继续提交 audio_asset_id。
+    # 原录音客户端继续提交 audio_asset_id。
     audio_asset_id: int | None = None
     source_type: Literal["text", "audio", "video"] = "audio"
-    # [新增] 无原声的 App 转写通过文字入口保存并标识来源。
+    # 无原声的 App 转写通过文字入口保存并标识来源。
     source_origin: Literal["app_asr"] | None = None
     source_asset_id: int | None = None
     content_text: str | None = None

@@ -85,8 +85,6 @@ class AttachmentUploadService:
                 db.rollback()
                 results.append(self._item_error(item.client_file_id, exc, authorizing=True))
             else:
-                # [删除-旧] item_status = "reused" if grant.pop("reused") else "upload_required"
-                # results.append({**grant, "client_file_id": item.client_file_id, "status": item_status})
                 result = {**grant, "client_file_id": item.client_file_id}
                 pending_representative = grant.get("representative_client_file_id")
                 batch_representative = representatives.get(grant["asset_id"])
@@ -110,7 +108,7 @@ class AttachmentUploadService:
                         else:
                             upload_grants[item.client_file_id] = grant["asset_id"]
                 results.append(result)
-        # [新增] 代表项实际取得本批直传授权才算本批重复，已失败的授权不参与依赖。
+        # 代表项实际取得本批直传授权才算本批重复，已失败的授权不参与依赖。
         for result in results:
             if result.get("reason") == "pending_upload" and (
                 upload_grants.get(result["representative_client_file_id"]) == result["asset_id"]
@@ -129,7 +127,7 @@ class AttachmentUploadService:
         memory_id = self._check_target(db, user, fragment_id)
         user_id = user.id
         ask = body.duplicate_mode == "ask"
-        # [新增] 先完成代表项，再处理依赖项。响应仍按 App 传入的顺序返回。
+        # 先完成代表项，再处理依赖项。响应仍按 App 传入的顺序返回。
         results: dict[UUID, dict] = {}
         verification_errors: dict[tuple[int, str], HTTPException] = {}
         items = sorted(body.items, key=lambda item: item.representative_client_file_id is not None)
@@ -141,14 +139,6 @@ class AttachmentUploadService:
                     fragment_id,
                     item.representative_client_file_id or item.client_file_id,
                 )
-                # [删除-旧] asset = self.memory.complete_upload(
-                #     db, user, item.asset_id,
-                #     UploadCompleteRequest(duration_ms=item.duration_ms, sample_rate_hz=item.sample_rate_hz),
-                #     storage, attachment_upload_key=self.memory.batch_attachment_upload_key(
-                #         user_id, memory_id, fragment_id, item.client_file_id
-                #     ),
-                # )
-                # asset_id = asset.id
                 asset_id = self._verify_file(
                     db, user, user_id, fragment_id, item, storage, upload_key, verification_errors
                 )
@@ -158,17 +148,10 @@ class AttachmentUploadService:
             except HTTPException as exc:
                 db.rollback()
                 result = self._item_error(item.client_file_id, exc, authorizing=False)
-            # [删除-旧] except OSError:
-            #     db.rollback()
-            #     result = self._item_error(
-            #         item.client_file_id,
-            #         HTTPException(502, "对象存储暂时无法读取附件"),
-            #         authorizing=False,
-            #     )
             results[item.client_file_id] = result
         return {"items": [results[item.client_file_id] for item in body.items]}
 
-    # [新增] 同一批次的依赖项复用代表项的校验结果。失败后等下一批重试。
+    # 同一批次的依赖项复用代表项的校验结果。失败后等下一批重试。
     def _verify_file(
         self,
         db: Session,
@@ -238,11 +221,8 @@ class AttachmentUploadService:
                 FragmentAttachment.fragment_id == fragment_id,
                 FragmentAttachment.is_del.is_(False),
             )
-            # [删除-旧] attachment_id = db.scalar(
-            #     select(FragmentAttachment.id).where(*active, FragmentAttachment.media_asset_id == asset.id)
-            # )
             result = {"client_file_id": item.client_file_id, "asset_id": asset.id}
-            # [新增] 操作级幂等优先于按文件查重。保留多份后仍返回该操作的关联 ID。
+            # 操作级幂等优先于按文件查重。保留多份后仍返回该操作的关联 ID。
             operation = self.memory._attachment_operation(
                 db, fragment_id, user_id, item.client_file_id
             )
@@ -255,7 +235,6 @@ class AttachmentUploadService:
             if item.duplicate_action != "keep" and (
                 attachment_id is not None or item.representative_client_file_id is not None
             ):
-                # [删除-旧] return {**result, "status": "already_attached", "attachment_id": attachment_id}
                 return {
                     **result,
                     "status": "duplicate" if ask else "already_attached",

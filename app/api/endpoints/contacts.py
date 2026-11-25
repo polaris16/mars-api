@@ -42,13 +42,13 @@ def list_contacts(
     page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     keyword: Annotated[str | None, Query(max_length=100)] = None,
-    # [新增] 有效联系人支持全量查询和显式昵称排序。
+    # 有效联系人支持全量查询和显式昵称排序。
     paginate: Annotated[bool, Query(description="仅 active 视图可以设为 false")] = True,
     sort: Annotated[
         RelationshipSort, Query(description="仅 active 视图支持显式昵称排序，默认昵称升序")
     ] = "default",
 ):
-    # [删除-旧] return relationships.list_contacts(db, user.id, view, page, page_size, keyword)
+    # return relationships.list_contacts(db, user.id, view, page, page_size, keyword)
     if view != "active" and (not paginate or sort != "default"):
         raise HTTPException(status_code=422, detail="仅有效联系人支持全量查询和指定排序")
     return relationships.list_contacts(
@@ -56,7 +56,7 @@ def list_contacts(
     )
 
 
-# [新增] 搜索候选和申请历史独立于已有联系人列表。
+# 搜索候选和申请历史独立于已有联系人列表。
 @router.post("/search", response_model=ContactSearchResponse, summary="搜索好友候选")
 def search_contact_candidates(
     body: ContactSearchRequest, user: CurrentUser, db: Db, relationships: Relationships
@@ -70,13 +70,16 @@ def list_contact_requests(
     db: Db,
     relationships: Relationships,
     direction: ContactRequestDirection,
-    status: ContactRequestStatus | None = None,
+    # 默认只查待处理申请，重复传 status 可匹配多个状态。
+    status: Annotated[
+        tuple[ContactRequestStatus, ...],
+        Query(min_length=1, description="默认 pending，重复传 status 可查询多个状态"),
+    ] = ("pending",),
     page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     paginate: PaginateOnly = True,
     sort: CreatedAtSort = "default",
 ):
-    # [删除-旧] return relationships.list_contact_requests(db, user.id, direction, status, page, page_size)
     return relationships.list_contact_requests(
         db, user.id, direction, status, page, page_size, sort=sort
     )
@@ -96,13 +99,11 @@ def get_contact_invite_code(
     "/requests",
     response_model=RelationshipRecordResponse,
     status_code=201,
-    # [删除-旧] summary="使用邀请码发起好友申请",
     summary="向候选人或邀请码持有者发起好友申请",
 )
 def send_contact_request(
     body: ContactRequest, user: CurrentUser, db: Db, codes: Codes, relationships: Relationships
 ):
-    # [删除-旧] target = codes.target_user_id(db, body.code)
     target = body.related_user_id if body.code is None else codes.target_user_id(db, body.code)
     assert target is not None  # 请求模型确保提供一种有效的目标标识。
     return relationships.create(

@@ -62,8 +62,7 @@ class MemorySessionMemberService:
                 return None
             rows = [row]
         else:
-            # [删除-旧] if row.relationship_type != "family":
-            # [新增] 仅版本化会话开放联系人授权，沿用原始记忆由所有者编辑的边界。
+            # 仅版本化会话开放联系人授权，沿用原始记忆由所有者编辑的边界。
             allowed = row.relationship_type == "family" or (
                 allow_contacts
                 and row.relationship_type == "contact"
@@ -79,7 +78,6 @@ class MemorySessionMemberService:
                     )
                 )
             )
-            # [删除-旧] if not UserRelationshipService.is_confirmed_family_pair(rows, now):
             if not UserRelationshipService.is_confirmed_pair(rows, now):
                 return None
         if any(
@@ -222,15 +220,7 @@ class MemorySessionMemberService:
             MemorySessionMember.session_id == session_id,
             MemorySessionMember.is_del.is_(False),
         )
-        # [删除-旧] total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
-        # rows = session.execute(
-        #     query.join(User, User.id == MemorySessionMember.user_id)
-        #     .add_columns(User.is_del)
-        #     .order_by(MemorySessionMember.granted_at.desc(), MemorySessionMember.id.desc())
-        #     .offset((page - 1) * page_size)
-        #     .limit(page_size)
-        # ).all()
-        # [新增] 全量和分页都使用相同的会话管理权限和记录范围。
+        # 全量和分页都使用相同的会话管理权限和记录范围。
         granted_at = MemorySessionMember.granted_at
         ordering = granted_at.asc() if sort == "granted_at_asc" else granted_at.desc()
         listing = (
@@ -346,7 +336,7 @@ class MemorySessionMemberService:
             member.updated_by = actor_id
             member.updated_at = now
             session.flush()
-            # [新增] 重新授权的贡献者可能让历史素材恢复为有效证据。
+            # 重新授权的贡献者可能让历史素材恢复为有效证据。
             if memory.visibility is not None and member.role in {"contributor", "editor"}:
                 schedule_material_validation(
                     session,
@@ -386,7 +376,7 @@ class MemorySessionMemberService:
                 member.revocation_reason = reason
                 member.updated_by = actor_id
                 member.updated_at = now
-                # [新增] 贡献者授权撤回后复核该会话已被引用的来源。
+                # 贡献者授权撤回后复核该会话已被引用的来源。
                 if memory.visibility is not None and member.role in {"contributor", "editor"}:
                     schedule_material_validation(
                         session,

@@ -113,7 +113,7 @@ class CandidateResolutionCreate(BaseModel):
     action: Literal["link_existing", "create_new", "reject_match"]
     entity_id: ProcessingId | None = None
     canonical_name: EntityName | None = None
-    # [新增] 仅在同一引句有多个可核对位置时选择已登记的位置。
+    # 仅在同一引句有多个可核对位置时选择已登记的位置。
     evidence_location_index: Annotated[int, Field(strict=True, ge=0)] | None = None
 
     @model_validator(mode="after")

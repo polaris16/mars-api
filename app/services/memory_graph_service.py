@@ -107,11 +107,7 @@ class MemoryGraphService:
                 continue
             items.append(node)
 
-        # [删除-旧] items.sort(key=lambda node: (
-        #     node.time.precision == "unknown", node.time.start_date or node.time.end_date or date.max,
-        #     _node_order(node.node_id),
-        # ))
-        # [新增] 只改变有时间锚点的排序方向，未知时间仍放在最后。
+        # 只改变有时间锚点的排序方向，未知时间仍放在最后。
         def order(node: EventNode) -> tuple[bool, int, tuple[str, int]]:
             anchor = node.time.start_date or node.time.end_date
             if anchor is None:
@@ -147,7 +143,7 @@ class MemoryGraphService:
             and any(query in value.casefold() for value in (node.display_name, *node.aliases))
         ]
         items.sort(key=lambda node: (node.display_name.casefold(), _node_order(node.node_id)))
-        # [新增] Python 的稳定排序让同名节点在降序时仍按节点 ID 排列。
+        # Python 的稳定排序让同名节点在降序时仍按节点 ID 排列。
         if sort == "name_desc":
             items.sort(key=lambda node: node.display_name.casefold(), reverse=True)
         return self._page(view, items, page, page_size)
@@ -258,7 +254,6 @@ class MemoryGraphService:
             proofs = view.proofs[node_id]
         else:
             proofs = self._edge_proofs(view, edge_parameters)
-        # [删除-旧] items = sorted(proofs.values(), key=lambda item: item.evidence_id)
         items = sorted(
             proofs.values(), key=lambda item: item.evidence_id, reverse=sort == "evidence_id_desc"
         )

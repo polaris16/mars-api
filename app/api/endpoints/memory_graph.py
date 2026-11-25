@@ -73,7 +73,6 @@ def list_memory_graph_entities(
     paginate: PaginateOnly = True,
     sort: NameSort = "default",
 ):
-    # [删除-旧] return service.entities(db, user, session_id, page, page_size, entity_type=entity_type, keyword=keyword)
     return service.entities(
         db, user, session_id, page, page_size, entity_type=entity_type, keyword=keyword, sort=sort
     )

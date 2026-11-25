@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
 MemberRole = Literal["viewer", "contributor", "editor", "delegate"]
-# [新增] 会话成员可按授权时间排序。
+# 会话成员可按授权时间排序。
 MemberSort = Literal["default", "granted_at_asc", "granted_at_desc"]
 
 
