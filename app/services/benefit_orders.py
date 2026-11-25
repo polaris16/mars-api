@@ -135,6 +135,8 @@ class BenefitOrderService:
             service = active_row(ctx.db, BenefitServiceVersion, item.service_version_id)
             if service.fulfillment_mode != "appointment":
                 raise conflict("benefit_fulfillment_unavailable", "该服务的线上履约尚未接入")
+            if service.appointment_handler == "youth_partner":
+                raise conflict("benefit_youth_booking_required", "请从青年伙伴预约入口提交")
             if body.preferred_start_at is not None and not (
                 max(now, utc(grant.valid_from))
                 <= body.preferred_start_at
@@ -212,13 +214,22 @@ class BenefitOrderService:
         order_id=None,
         sort: BenefitOrderSort = "default",
     ):
+        from app.services.youth_partner_bookings import order_view
+
         with ctx.db.begin():
             stmt, _ = self.access_scope(ctx, self.order_statement(), fulfill=fulfill)
             if order_id is not None:
                 row = ctx.db.scalar(stmt.where(BenefitServiceOrder.id == order_id))
                 if row is None:
                     raise missing()
-                return self.view(row, ctx.db.get(BenefitBalance, row.balance_id), private=True)
+                # [删除-旧] return self.view(row, ctx.db.get(BenefitBalance, row.balance_id), private=True)
+                return order_view(
+                    ctx,
+                    row,
+                    ctx.db.get(BenefitBalance, row.balance_id),
+                    fulfill=fulfill,
+                    detail=True,
+                )
             if grant_id is not None:
                 stmt = stmt.where(BenefitGrant.id == grant_id)
             if assignee is not None:
@@ -249,7 +260,9 @@ class BenefitOrderService:
                 stmt.order_by(*ordering),
                 page,
                 size,
-                lambda row: self.view(row, ctx.db.get(BenefitBalance, row.balance_id)),
+                lambda row: order_view(
+                    ctx, row, ctx.db.get(BenefitBalance, row.balance_id), fulfill=fulfill
+                ),
             )
 
     @staticmethod
@@ -267,6 +280,8 @@ class BenefitOrderService:
 
     @staticmethod
     def booking(db, row, grant, body, now):
+        from app.services.youth_partner_schedule import busy_windows
+
         if (
             not max(now, utc(grant.valid_from))
             <= body.scheduled_start_at
@@ -274,25 +289,56 @@ class BenefitOrderService:
             <= utc(grant.valid_until)
         ):
             raise BenefitError(422, "benefit_appointment_window", "正式预约须在权益有效期内")
-        found = db.scalar(
-            select(BenefitServiceOrder.id)
-            .where(
-                BenefitServiceOrder.id != row.id,
-                BenefitServiceOrder.assignee_user_id == body.assignee_user_id,
-                BenefitServiceOrder.status.in_(("reserved", "in_progress")),
-                BenefitServiceOrder.is_del.is_(False),
-                BenefitServiceOrder.scheduled_start_at < body.scheduled_end_at,
-                BenefitServiceOrder.scheduled_end_at > body.scheduled_start_at,
-            )
-            .limit(1)
+        # [删除-旧] 仅用服务起止时间比较服务单。
+        # found = db.scalar(
+        #     select(BenefitServiceOrder.id).where(
+        #         BenefitServiceOrder.id != row.id,
+        #         BenefitServiceOrder.assignee_user_id == body.assignee_user_id,
+        #         BenefitServiceOrder.status.in_(("reserved", "in_progress")),
+        #         BenefitServiceOrder.is_del.is_(False),
+        #         BenefitServiceOrder.scheduled_start_at < body.scheduled_end_at,
+        #         BenefitServiceOrder.scheduled_end_at > body.scheduled_start_at,
+        #     ).limit(1)
+        # )
+        # [修改] 通用派单也校验青年伙伴已占用的含通勤时段。
+        found = busy_windows(
+            db,
+            body.assignee_user_id,
+            body.scheduled_start_at,
+            body.scheduled_end_at,
+            now,
+            exclude_id=row.id,
         )
-        if found is not None:
+        if found:
             raise conflict("appointment_slot_unavailable", "此时段已为该履约人员安排服务")
         row.assignee_user_id = body.assignee_user_id
-        row.scheduled_start_at = body.scheduled_start_at
-        row.scheduled_end_at = body.scheduled_end_at
+        row.scheduled_start_at = utc(body.scheduled_start_at)
+        row.scheduled_end_at = utc(body.scheduled_end_at)
 
     def action(self, ctx, order_id, idem, body, *, fulfill):
+        from app.services.youth_partner_bookings import (
+            active_booking,
+            change_booking,
+            report_booking_failure,
+        )
+
+        with ctx.db.begin():
+            scoped, _ = self.access_scope(ctx, self.order_statement(), fulfill=fulfill)
+            visible_id = ctx.db.scalar(
+                scoped.with_only_columns(BenefitServiceOrder.id).where(
+                    BenefitServiceOrder.id == order_id
+                )
+            )
+            if visible_id is None:
+                raise missing()
+            is_youth_booking = active_booking(ctx.db, visible_id) is not None
+        if is_youth_booking:
+            if not fulfill:
+                return {"order": change_booking(ctx, order_id, idem, body, fulfill=False)}
+            if body.action == "fail":
+                return report_booking_failure(ctx, order_id, idem, body)
+            raise conflict("benefit_youth_booking_required", "请使用青年伙伴预约操作")
+
         keys = BenefitKeys()
         action = body.action if fulfill else "cancel"
         submitted = {"action": action, "actor_id": ctx.actor_id, **body.model_dump(mode="json")}

@@ -19,6 +19,7 @@ from app.models.base import Base
 
 # 产品图片使用独立用途，保留媒体对象的统一校验和存储元数据。
 PRODUCT_IMAGE_PURPOSES = "'product_reference', 'experience_source', 'experience_generated'"
+PARTNER_IMAGE_PURPOSES = "'partner_photo', 'partner_identity'"
 
 
 class MediaAsset(Base):
@@ -27,8 +28,14 @@ class MediaAsset(Base):
         PrimaryKeyConstraint("id", name="t_media_asset_pkey"),
         UniqueConstraint("object_key", name="t_media_asset_object_key_key"),
         CheckConstraint(
-            f"purpose IN ('recording', 'source', 'attachment', {PRODUCT_IMAGE_PURPOSES})",
+            # [删除-旧] f"purpose IN ('recording', 'source', 'attachment', {PRODUCT_IMAGE_PURPOSES})",
+            f"purpose IN ('recording', 'source', 'attachment', {PRODUCT_IMAGE_PURPOSES}, "
+            f"{PARTNER_IMAGE_PURPOSES})",
             name="ck_t_media_asset_purpose",
+        ),
+        CheckConstraint(
+            f"purpose NOT IN ({PARTNER_IMAGE_PURPOSES}) OR media_type = 'image'",
+            name="ck_t_media_asset_partner_image",
         ),
         CheckConstraint(
             f"purpose NOT IN ({PRODUCT_IMAGE_PURPOSES}) OR media_type = 'image'",
@@ -93,7 +100,10 @@ class MediaAsset(Base):
         comment="上传账户ID",
     )
     purpose = Column(
-        String(30), nullable=False, comment="用途：录音、片段来源、附件、产品图、体验原照或成图"
+        # [删除-旧] String(30), nullable=False, comment="用途：录音、片段来源、附件、产品图、体验原照或成图"
+        String(30),
+        nullable=False,
+        comment="用途：录音、片段来源、附件、产品体验图片、伙伴展示照或身份证照片",
     )
     media_type = Column(String(20), nullable=False, comment="媒体类型：audio/image/video/text")
     storage_provider = Column(String(40), nullable=False, comment="对象存储提供商")

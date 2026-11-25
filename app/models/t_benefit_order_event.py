@@ -28,7 +28,9 @@ class BenefitOrderEvent(AuditFields, Base):
             "service_order_id", "order_version", name="uq_benefit_event_order_version"
         ),
         CheckConstraint(
-            "action IN ('create', 'confirm_booking', 'reschedule', 'start', 'complete', 'cancel', 'fail')",
+            # [删除-旧] "action IN ('create', 'confirm_booking', 'reschedule', 'start', 'complete', 'cancel', 'fail')",
+            "action IN ('create', 'confirm_booking', 'reschedule', 'start', 'complete', "
+            "'cancel', 'fail', 'check_in', 'finish_partner_service')",
             name="ck_benefit_event_action",
         ),
         CheckConstraint(
@@ -48,7 +50,9 @@ class BenefitOrderEvent(AuditFields, Base):
         CheckConstraint(
             "((used_delta = 0 AND reserved_delta IN (-1, 0, 1)) OR "
             "(used_delta = 1 AND reserved_delta = -1)) AND "
-            "(action = 'complete') = (used_delta = 1)",
+            # [删除-旧] "(action = 'complete') = (used_delta = 1)",
+            "(action IN ('complete', 'check_in')) = (used_delta = 1) AND "
+            "(action <> 'finish_partner_service' OR reserved_delta = 0)",
             name="ck_benefit_event_balance_delta",
         ),
         CheckConstraint("jsonb_typeof(event_data) = 'object'", name="ck_benefit_event_data"),
@@ -66,7 +70,10 @@ class BenefitOrderEvent(AuditFields, Base):
     request_digest = Column(LargeBinary, nullable=False, comment="动作请求的带密钥摘要，32 字节")
     digest_key_version = Column(SmallInteger, nullable=False, comment="动作请求摘要密钥版本")
     action = Column(
-        String(30), nullable=False, comment="创建、确认预约、改约、开始、核销、取消或失败"
+        # [删除-旧] String(30), nullable=False, comment="创建、确认预约、改约、开始、核销、取消或失败"
+        String(30),
+        nullable=False,
+        comment="服务单动作，包括到场核销 check_in 和青年伙伴服务完成 finish_partner_service",
     )
     from_status = Column(String(20), comment="动作之前的服务单状态，创建时为空")
     to_status = Column(String(20), nullable=False, comment="动作之后的服务单状态")

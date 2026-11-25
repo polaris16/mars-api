@@ -43,7 +43,7 @@ def _migration_sql(*, upgrade: bool) -> str:
 def test_benefit_model_registration_comments_and_reference_chain():
     tables = Base.metadata.tables
     assert {name for name in tables if name.startswith(("t_benefit_", "t_enterprise"))} == (
-        BENEFIT_TABLES
+        BENEFIT_TABLES | {"t_benefit_grant_service_location"}
     )
     for name in BENEFIT_TABLES:
         table = tables[name]
@@ -78,11 +78,29 @@ def test_benefit_migration_adds_only_new_tables_and_integrity_checks():
         assert f"COMMENT ON TABLE {name} IS '{table.comment}'" in sql
         for column in table.columns:
             # 线上处理器字段由后续产品体验迁移创建。
-            if (name, column.name) == ("t_benefit_service_version", "online_handler"):
+            if name == "t_benefit_service_version" and column.name in {
+                "online_handler",
+                "online_duration_minutes",
+                "offline_duration_minutes",
+                "appointment_handler",
+            }:
                 continue
-            assert f"COMMENT ON COLUMN {name}.{column.name} IS '{column.comment}'" in sql
+            # 历史迁移保留原始注释，青年伙伴迁移单独验证新说明。
+            original_comments = {
+                ("t_benefit_order_event", "action"): "创建、确认预约、改约、开始、核销、取消或失败",
+                (
+                    "t_benefit_staff",
+                    "role",
+                ): "岗位：admin 管理，ops 运营，dispatcher 派单，provider 履约",
+            }
+            comment = original_comments.get((name, column.name), column.comment)
+            assert f"COMMENT ON COLUMN {name}.{column.name} IS '{comment}'" in sql
         for constraint in table.constraints:
-            if constraint.name == "ck_benefit_service_version_online_handler":
+            if constraint.name in {
+                "ck_benefit_service_version_online_handler",
+                "ck_benefit_service_version_durations",
+                "ck_benefit_service_version_appointment_handler",
+            }:
                 continue
             if constraint.name is not None:
                 assert f"CONSTRAINT {constraint.name} " in sql

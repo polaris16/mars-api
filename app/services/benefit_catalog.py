@@ -49,7 +49,8 @@ ENTERPRISE_FIELDS = "id code display_name icon_url status"
 MEMBER_FIELDS = "id enterprise_id user_id role status work_display_name work_title work_phone"
 VERSION_FIELDS = (
     "id service_id version_no name summary description_ref terms_ref delivery_terms "
-    "fulfillment_mode online_handler status published_at"
+    "fulfillment_mode online_handler online_duration_minutes offline_duration_minutes "
+    "appointment_handler status published_at"
 )
 PACKAGE_FIELDS = "id package_code version_no title description icon_url status published_at"
 ITEM_FIELDS = "id service_version_id quota_per_unit icon_key sort_order"
@@ -295,9 +296,7 @@ class BenefitCatalogService:
                 "role_asc": (BenefitStaff.role.asc(), BenefitStaff.id),
                 "role_desc": (BenefitStaff.role.desc(), BenefitStaff.id),
             }[sort]
-            stmt = (
-                select(BenefitStaff).where(BenefitStaff.is_del.is_(False)).order_by(*order)
-            )
+            stmt = select(BenefitStaff).where(BenefitStaff.is_del.is_(False)).order_by(*order)
             return paginate(
                 ctx.db, stmt, page, size, lambda row: display(row, "id user_id role status")
             )

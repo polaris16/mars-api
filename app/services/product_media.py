@@ -79,7 +79,9 @@ def image_link(asset, storage) -> dict:
     }
 
 
-def authorize_upload(ctx, storage, body, purpose: str, *, round_row=None) -> dict:
+def authorize_upload(
+    ctx, storage, body, purpose: str, *, round_row=None, namespace="product-experience", scope=""
+) -> dict:
     ttl = get_settings().object_storage_upload_ttl_seconds
     expires = now_utc() + timedelta(seconds=ttl)
     if round_row is not None:
@@ -87,7 +89,7 @@ def authorize_upload(ctx, storage, body, purpose: str, *, round_row=None) -> dic
         ttl = int((expires - now_utc()).total_seconds())
         if ttl < 1:
             raise conflict("benefit_expired", "体验轮次已过期")
-    key = f"product-experience/{ctx.actor_id}/{purpose}/{uuid4().hex}"
+    key = f"{namespace}/{ctx.actor_id}/{purpose}/{scope}{uuid4().hex}"
     filename = body.filename.replace("\\", "/").rsplit("/", 1)[-1]
     row = new_row(
         MediaAsset,
@@ -149,21 +151,24 @@ def _dedup_image(ctx, row, digest: str, size: int):
 
 def _completion(ctx, row, storage, sequence_key):
     if row.upload_status in CONFIRMED:
-        return {sequence_key: row.id, **image_link(row, storage)}
+        return {sequence_key: row.id, **(image_link(row, storage) if storage else {})}
     if row.upload_status == "failed" and row.content_sha256:
         canonical = _dedup_image(ctx, row, row.content_sha256, row.size_bytes)
         if canonical is not None:
-            return {sequence_key: canonical.id, **image_link(canonical, storage)}
+            return {
+                sequence_key: canonical.id,
+                **(image_link(canonical, storage) if storage else {}),
+            }
     if row.upload_status != "pending_upload" or utc(row.upload_expires_at) <= now_utc():
         raise conflict("upload_expired", "上传授权已过期或该图片已停止确认")
     return None
 
 
-def complete_upload(ctx, asset_id: int, purpose: str, storage) -> dict:
+def complete_upload(ctx, asset_id: int, purpose: str, storage, *, include_link=True) -> dict:
     sequence_key = "asset_id" if purpose == PRODUCT_IMAGE else "photo_id"
     with ctx.db.begin():
         row = owned_image(ctx, asset_id, purpose)
-        previous = _completion(ctx, row, storage, sequence_key)
+        previous = _completion(ctx, row, storage if include_link else None, sequence_key)
         if previous is not None:
             return previous
         key, content_type = row.object_key, row.content_type
@@ -184,7 +189,7 @@ def complete_upload(ctx, asset_id: int, purpose: str, storage) -> dict:
         # 同账号的内容复用串行检查，保留可重试的原授权记录。
         active_row(ctx.db, User, ctx.actor_id, lock=True)
         row = owned_image(ctx, asset_id, purpose, lock=True)
-        previous = _completion(ctx, row, storage, sequence_key)
+        previous = _completion(ctx, row, storage if include_link else None, sequence_key)
         if previous is not None:
             return previous
         canonical = _dedup_image(ctx, row, digest, size)
@@ -196,7 +201,10 @@ def complete_upload(ctx, asset_id: int, purpose: str, storage) -> dict:
             canonical = row
         else:
             row.upload_status = "failed"
-        return {sequence_key: canonical.id, **image_link(canonical, storage)}
+        return {
+            sequence_key: canonical.id,
+            **(image_link(canonical, storage) if include_link else {}),
+        }
 
 
 def delete_photo(ctx, asset_id: int) -> None:

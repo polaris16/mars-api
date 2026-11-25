@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.services.benefit_common import BenefitContext, BenefitKeys, now_utc, utc
 from app.services.benefit_orders import BenefitOrderService
+from app.services.youth_partner_bookings import expire_bookings
 
 
 def expire_benefit_records(db, limit: int = 100) -> tuple[int, int]:
@@ -95,7 +96,10 @@ def main() -> None:
         parser.error("企业权益功能尚未启用")
     with SessionLocal() as db:
         grants, orders = expire_benefit_records(db, args.limit)
-    print(f"expired_grants={grants} cancelled_requests={orders}")
+        bookings = expire_bookings(db, args.limit)
+    print(
+        f"expired_grants={grants} cancelled_requests={orders} cancelled_youth_bookings={bookings}"
+    )
 
 
 if __name__ == "__main__":

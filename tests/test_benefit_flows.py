@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import JSON, Integer, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.core.config import get_settings
 from app.db.database import get_db
@@ -41,7 +41,7 @@ def benefits(client, monkeypatch, tmp_path):
     tables = [
         table
         for table in Base.metadata.sorted_tables
-        if table.name.startswith(("t_benefit_", "t_enterprise"))
+        if table.name.startswith(("t_benefit_", "t_enterprise", "t_youth_partner_"))
     ]
     with engine.begin() as conn:
         raw = conn.connection.driver_connection
@@ -58,9 +58,10 @@ def benefits(client, monkeypatch, tmp_path):
                     table.c.id, "type", table.c.id.type.with_variant(Integer(), "sqlite")
                 )
             for col in table.c:
-                if isinstance(col.type, JSONB):
+                if isinstance(col.type, (ARRAY, JSONB)):
+                    default = "'[]'" if isinstance(col.type, ARRAY) else "'{}'"
                     monkeypatch.setattr(col, "type", col.type.with_variant(JSON(), "sqlite"))
-                    monkeypatch.setattr(col.server_default, "arg", text("'{}'"))
+                    monkeypatch.setattr(col.server_default, "arg", text(default))
             for constraint in table.constraints:
                 if constraint.name == "ck_benefit_grant_phone_last4":
                     monkeypatch.setattr(
@@ -91,7 +92,7 @@ def send(client, method, url, headers, body=None, expected=200, key=None):
     return result.json()
 
 
-def configure(benefits, units=2, *, different_description=False, online=False):
+def configure(benefits, units=2, *, different_description=False, online=False, youth=False):
     client, root = benefits
     platform = login(client, "13800000001")
     customer = login(client, "13800000002")
@@ -125,6 +126,8 @@ def configure(benefits, units=2, *, different_description=False, online=False):
     # [新增] 线上产品体验走同一采购、发放和领取流程。
     if online:
         version_body.update(fulfillment_mode="online", online_handler="product_experience")
+    if youth:
+        version_body.update(offline_duration_minutes=45, appointment_handler="youth_partner")
     version = send(client, "POST", service_base, platform, version_body, 201)
     version_path = f"{service_base}/{version['id']}"
     send(client, "POST", f"{version_path}/publish", platform)
@@ -139,6 +142,7 @@ def configure(benefits, units=2, *, different_description=False, online=False):
             {
                 **version_body,
                 "description_ref": doc(root, "包含一段口述录音的陪伴服务"),
+                **({"appointment_handler": None} if youth else {}),
             },
             201,
         )
@@ -152,7 +156,10 @@ def configure(benefits, units=2, *, different_description=False, online=False):
         {
             "package_code": "care",
             "title": "关怀计划",
-            "items": [{"service_version_id": item, "quota_per_unit": 1} for item in version_ids],
+            "items": [
+                {"service_version_id": item, "quota_per_unit": 2 if youth else 1}
+                for item in version_ids
+            ],
         },
         201,
     )

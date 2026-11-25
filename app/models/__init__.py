@@ -63,6 +63,15 @@ from app.models.t_product_experience_round import ProductExperienceRound
 from app.models.t_product_experience_preview import ProductExperiencePreview
 from app.models.t_product_experience_result import ProductExperienceResult
 from app.models.t_product_experience_share import ProductExperienceShare
+from app.models.t_youth_partner_profile import YouthPartnerProfile
+from app.models.t_youth_partner_service import YouthPartnerService
+from app.models.t_youth_partner_identity_document import YouthPartnerIdentityDocument
+from app.models.t_youth_partner_identity_access import YouthPartnerIdentityAccess
+from app.models.t_youth_partner_availability import YouthPartnerAvailability
+from app.models.t_benefit_grant_service_location import BenefitGrantServiceLocation
+from app.models.t_youth_partner_booking import YouthPartnerBooking
+from app.models.t_youth_partner_check_in_code import YouthPartnerCheckInCode
+from app.models.t_youth_partner_rating import YouthPartnerRating
 
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
@@ -127,4 +136,13 @@ __all__ = [
     "ProductExperiencePreview",
     "ProductExperienceResult",
     "ProductExperienceShare",
+    "YouthPartnerProfile",
+    "YouthPartnerService",
+    "YouthPartnerIdentityDocument",
+    "YouthPartnerIdentityAccess",
+    "YouthPartnerAvailability",
+    "BenefitGrantServiceLocation",
+    "YouthPartnerBooking",
+    "YouthPartnerCheckInCode",
+    "YouthPartnerRating",
 ]

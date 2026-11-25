@@ -19,7 +19,9 @@ class BenefitStaff(AuditFields, Base):
     __table_args__ = (
         UniqueConstraint("user_id", "role", name="uq_benefit_staff_user_role"),
         CheckConstraint(
-            "role IN ('admin', 'ops', 'dispatcher', 'provider')", name="ck_benefit_staff_role"
+            # [删除-旧] "role IN ('admin', 'ops', 'dispatcher', 'provider')",
+            "role IN ('admin', 'ops', 'dispatcher', 'provider', 'identity_reviewer')",
+            name="ck_benefit_staff_role",
         ),
         CheckConstraint("status IN ('active', 'disabled')", name="ck_benefit_staff_status"),
         Index("idx_benefit_staff_role_status", "role", "status", "user_id"),
@@ -36,7 +38,8 @@ class BenefitStaff(AuditFields, Base):
     role = Column(
         String(20),
         nullable=False,
-        comment="岗位：admin 管理，ops 运营，dispatcher 派单，provider 履约",
+        # [删除-旧] comment="岗位：admin 管理，ops 运营，dispatcher 派单，provider 履约",
+        comment="岗位：admin 管理，ops 运营，dispatcher 派单，provider 履约，identity_reviewer 证件审核",
     )
     status = Column(
         String(20),

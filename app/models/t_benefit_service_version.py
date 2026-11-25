@@ -36,6 +36,16 @@ class BenefitServiceVersion(AuditFields, Base):
             "status IN ('draft', 'published', 'retired')", name="ck_benefit_service_version_status"
         ),
         CheckConstraint(
+            "(online_duration_minutes IS NULL OR online_duration_minutes > 0) AND "
+            "(offline_duration_minutes IS NULL OR offline_duration_minutes > 0)",
+            name="ck_benefit_service_version_durations",
+        ),
+        CheckConstraint(
+            "appointment_handler IS NULL OR (appointment_handler = 'youth_partner' "
+            "AND fulfillment_mode = 'appointment' AND offline_duration_minutes IS NOT NULL)",
+            name="ck_benefit_service_version_appointment_handler",
+        ),
+        CheckConstraint(
             "(status IN ('published', 'retired')) = (published_at IS NOT NULL)",
             name="ck_benefit_service_version_published",
         ),
@@ -60,6 +70,9 @@ class BenefitServiceVersion(AuditFields, Base):
         String(20), nullable=False, comment="履约方式：online 线上，appointment 预约"
     )
     online_handler = Column(String(50), comment="线上履约能力编码，如 product_experience")
+    online_duration_minutes = Column(Integer, comment="单次线上服务分钟数")
+    offline_duration_minutes = Column(Integer, comment="单次线下服务分钟数")
+    appointment_handler = Column(String(50), comment="预约履约能力编码，如 youth_partner")
     status = Column(
         String(20),
         nullable=False,

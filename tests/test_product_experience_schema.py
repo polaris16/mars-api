@@ -82,7 +82,10 @@ def test_product_upgrade_matches_metadata_without_writing_existing_business_data
     ):
         for field in column_names:
             column = tables[table_name].c[field]
-            assert f"COMMENT ON COLUMN {table_name}.{field} IS '{column.comment}'" in sql
+            comment = column.comment
+            if (table_name, field) == ("t_media_asset", "purpose"):
+                comment = "用途：录音、片段来源、附件、产品图、体验原照或成图"
+            assert f"COMMENT ON COLUMN {table_name}.{field} IS '{comment}'" in sql
     assert "DROP CONSTRAINT ck_t_media_asset_purpose" in sql
     assert "ADD CONSTRAINT ck_benefit_service_version_online_handler" in sql
     assert "ADD CONSTRAINT ck_t_media_asset_product_dimensions" in sql

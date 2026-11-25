@@ -381,7 +381,9 @@ class BenefitGrantService:
             "service_version_id": version.id,
             "icon_key": item.icon_key,
             **display(
-                version, "name summary description_ref terms_ref fulfillment_mode online_handler"
+                version,
+                "name summary description_ref terms_ref fulfillment_mode online_handler "
+                "appointment_handler online_duration_minutes offline_duration_minutes",
             ),
             **display(grant, "valid_from valid_until"),
             "display_timezone": batch.display_timezone,

@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import logging
 
 # ===== Windows 异步子进程支持 =====
 if sys.platform == "win32":
@@ -23,6 +24,22 @@ from app.api.router import api_router
 from app.db.database import engine
 from app.core.config import get_settings
 import uvicorn
+
+
+class MockStorageAccessFilter(logging.Filter):
+    """在访问日志中保留 Mock 文件路由，隐去可直接使用的签名。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            client, method, path, protocol, status = record.args
+            for prefix in ("/api/mock-storage/upload/", "/api/mock-storage/download/"):
+                if isinstance(path, str) and path.startswith(prefix):
+                    record.args = (client, method, prefix + "[redacted]", protocol, status)
+                    break
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(MockStorageAccessFilter())
 
 
 @asynccontextmanager

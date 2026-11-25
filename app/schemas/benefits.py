@@ -18,7 +18,7 @@ DocumentRef = Annotated[str, StringConstraints(pattern=r"^benefits/documents/[a-
 Phone = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\+?[0-9]{7,15}$")]
 ShortReason = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,49}$")]
 EnterpriseRole = Literal["admin", "issuer", "support"]
-StaffRole = Literal["admin", "ops", "dispatcher", "provider"]
+StaffRole = Literal["admin", "ops", "dispatcher", "provider", "identity_reviewer"]
 OrderStatus = Literal["requested", "reserved", "in_progress", "completed", "cancelled", "failed"]
 GrantStatus = Literal["issued", "claimed", "voided", "expired"]
 OrderAction = Literal["confirm_booking", "reschedule", "start", "complete", "cancel", "fail"]
@@ -93,11 +93,18 @@ class ServiceVersionInput(BenefitInput):
     delivery_terms: Annotated[str, StringConstraints(min_length=1, max_length=5000)]
     fulfillment_mode: Literal["online", "appointment"]
     online_handler: Literal["product_experience"] | None = None
+    online_duration_minutes: PositiveCount | None = None
+    offline_duration_minutes: PositiveCount | None = None
+    appointment_handler: Literal["youth_partner"] | None = None
 
     @model_validator(mode="after")
     def validate_online_handler(self):
         if self.online_handler is not None and self.fulfillment_mode != "online":
             raise ValueError("线上履约处理器仅适用于线上服务")
+        if self.appointment_handler and (
+            self.fulfillment_mode != "appointment" or not self.offline_duration_minutes
+        ):
+            raise ValueError("青年伙伴预约须指定线下服务时长")
         return self
 
 
@@ -281,6 +288,9 @@ class BenefitCardView(BaseModel):
     terms_ref: str
     fulfillment_mode: Literal["online", "appointment"]
     online_handler: Literal["product_experience"] | None = None
+    online_duration_minutes: int | None = None
+    offline_duration_minutes: int | None = None
+    appointment_handler: str | None = None
     valid_from: datetime
     valid_until: datetime
     display_timezone: str
@@ -366,6 +376,17 @@ class BenefitOrderView(BaseModel):
     request_data: dict
     remaining_count: int
     contact: dict[str, str] | None = None
+    booking_status: str | None = None
+    confirm_by: datetime | None = None
+    confirmed_at: datetime | None = None
+    checked_in_at: datetime | None = None
+    location: dict | None = None
+    reason_text: str | None = None
+    available_actions: list[str] | None = None
+    rating: dict | None = None
+    order_id: int | None = None
+    reserved_count: int | None = None
+    used_count: int | None = None
 
 
 class BenefitEventView(BaseModel):
