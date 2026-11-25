@@ -223,7 +223,7 @@ def test_youth_partner_identity_reservation_check_in_and_review(benefits, monkey
     monkeypatch.setattr(
         youth_partner_bookings,
         "now_utc",
-        lambda: start.astimezone(timezone.utc) + timedelta(minutes=15),
+        lambda: start.astimezone(timezone.utc) + timedelta(minutes=20),
     )
     qr = send(client, "POST", f"{customer_order}/check-in-code", customer)
     renewed = send(client, "POST", f"{customer_order}/check-in-code", customer)
@@ -240,8 +240,19 @@ def test_youth_partner_identity_reservation_check_in_and_review(benefits, monkey
     )
     assert send(client, "POST", scan, partner, payload, key=replay)["used_count"] == 1
     send(client, "POST", scan, partner, payload, 409, uuid4())
-    done = send(client, "POST", action, partner, {"action": "finish"}, key=uuid4())
+    monkeypatch.setattr(
+        youth_partner_bookings,
+        "now_utc",
+        lambda: start.astimezone(timezone.utc) + timedelta(minutes=75),
+    )
+    finish_key = uuid4()
+    done = send(client, "POST", action, partner, {"action": "finish"}, key=finish_key)
     assert done["booking_status"] == "completed" and done["used_count"] == 1
+    assert done["service_duration_seconds"] == 40 * 60
+    replayed = send(client, "POST", action, partner, {"action": "finish"}, key=finish_key)
+    assert replayed["service_duration_seconds"] == done["service_duration_seconds"]
+    details = send(client, "GET", f"/api/youth-partners/{partner_id}", customer)
+    assert (details["completed_service_count"], details["total_service_seconds"]) == (1, 2400)
     send(client, "POST", f"{customer_order}/rating", customer, {"score": 5})
     send(client, "POST", f"{customer_order}/rating", customer, {"score": 1}, 409)
     assert send(client, "GET", customer_order, customer)["rating"]["score"] == 5
@@ -300,6 +311,45 @@ def test_youth_partner_rejection_and_expiry_release_quota(benefits, monkeypatch)
         assert db.get(BenefitBalance, balance).reserved_count == 0
     detail = send(client, "GET", f"{USER}/benefit-service-orders/{second['id']}", customer)
     assert detail["booking_status"] == "confirmation_expired"
+
+
+def test_public_details_and_private_marks_follow_availability(benefits):
+    client, admin, customer, partner, balance, location, _, partner_id, _ = prepare(benefits)
+    details = f"/api/youth-partners/{partner_id}"
+    marks = f"{USER}/youth-partner-marks"
+    mark = f"{marks}/{partner_id}"
+    public_fields = {
+        "specialties": ["手机教学", "手机教学", "陪伴倾听"],
+        "message_to_users": "很高兴见到您",
+    }
+    editor = f"{OPS}/youth-partners/{partner_id}/public-details"
+    send(client, "PATCH", editor, customer, public_fields, 403)
+    send(client, "PATCH", editor, admin, public_fields)
+    payload = send(client, "GET", details, customer)
+    assert payload["specialties"] == ["手机教学", "陪伴倾听"]
+    assert payload["message_to_users"] == "很高兴见到您"
+    assert not payload["is_marked"] and not payload["can_book"] and not payload["can_consult"]
+    assert "identity_upload_status" not in payload and "photo_asset_id" not in payload
+    slot_details = f"{details}?balance_id={balance}&location_id={location['id']}"
+    assert send(client, "GET", slot_details, customer)["can_book"]
+    send(client, "GET", slot_details, partner, expected=404)
+    send(client, "GET", f"{details}?location_id={location['id']}", customer, expected=422)
+    assert client.put(mark, headers=customer).status_code == 204
+    page = send(client, "GET", marks, customer)
+    assert page["total"] == 1 and page["items"][0]["partner_id"] == partner_id
+    assert send(client, "GET", marks, admin)["total"] == 0
+    assert client.put(mark, headers=customer).status_code == 204
+    repeated = send(client, "GET", marks, customer)
+    assert repeated["total"] == 1
+    assert repeated["items"][0]["marked_at"] == page["items"][0]["marked_at"]
+    assert send(client, "GET", details, customer)["is_marked"]
+    send(client, "PUT", f"{OPS}/benefit-staff/3", admin, {"roles": []})
+    send(client, "GET", details, customer, expected=404)
+    unavailable = send(client, "GET", marks, customer)["items"][0]
+    assert unavailable["is_available"] is False and unavailable["partner"] is None
+    assert client.delete(mark, headers=customer).status_code == 204
+    assert client.delete(mark, headers=customer).status_code == 204
+    assert send(client, "GET", marks, customer)["total"] == 0
 
 
 def test_youth_partner_shared_schedule_and_unattended_booking(benefits, monkeypatch):

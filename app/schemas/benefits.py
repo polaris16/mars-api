@@ -380,6 +380,7 @@ class BenefitOrderView(BaseModel):
     confirm_by: datetime | None = None
     confirmed_at: datetime | None = None
     checked_in_at: datetime | None = None
+    service_duration_seconds: int | None = None
     location: dict | None = None
     reason_text: str | None = None
     available_actions: list[str] | None = None

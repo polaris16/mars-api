@@ -11,6 +11,7 @@ from app.models import Base
 
 BASE_REVISION = "20261124_02"
 YOUTH_REVISION = "20261125_01"
+DETAILS_REVISION = "20261125_02"
 TABLES = {
     "t_benefit_grant_service_location",
     "t_youth_partner_availability",
@@ -47,6 +48,8 @@ def test_youth_upgrade_adds_documented_tables_without_changing_business_rows():
         )
         for column in table.columns:
             assert column.comment and re.search(r"[\u4e00-\u9fff]", column.comment)
+            if column.name in {"specialties", "message_to_users", "service_duration_seconds"}:
+                continue
             assert f"COMMENT ON COLUMN {table_name}.{column.name}" in sql
         for fk in table.foreign_keys:
             assert fk.ondelete == "RESTRICT"
@@ -82,3 +85,29 @@ def test_youth_downgrade_guards_business_data_and_drops_dependents_first():
             if parent in TABLES:
                 assert dropped.index(name) < dropped.index(parent)
     assert "(action = 'complete') = (used_delta = 1)" in sql
+
+
+def test_youth_partner_details_migration_limits_backfill_and_protects_marks():
+    upgrade_output, downgrade_output = StringIO(), StringIO()
+    ini = str(Path(__file__).resolve().parents[1] / "alembic.ini")
+    command.upgrade(
+        Config(ini, output_buffer=upgrade_output), f"{YOUTH_REVISION}:{DETAILS_REVISION}", sql=True
+    )
+    sql = upgrade_output.getvalue()
+    assert re.findall(r"^CREATE TABLE (\w+) \(", sql, re.M) == ["t_youth_partner_mark"]
+    assert "orders.status = 'completed'" in sql
+    assert "booking.checked_in_at IS NOT NULL" in sql
+    assert "LEAST(orders.finished_at, orders.scheduled_end_at)" in sql
+    assert "GREATEST(booking.checked_in_at, orders.scheduled_start_at)" in sql
+    assert re.findall(r"^UPDATE (\w+)", sql, re.M) == ["t_youth_partner_booking", "alembic_version"]
+    mark = Base.metadata.tables["t_youth_partner_mark"]
+    for column in mark.c:
+        assert column.comment
+        assert f"COMMENT ON COLUMN t_youth_partner_mark.{column.name}" in sql
+    command.downgrade(
+        Config(ini, output_buffer=downgrade_output),
+        f"{DETAILS_REVISION}:{YOUTH_REVISION}",
+        sql=True,
+    )
+    inverse = downgrade_output.getvalue()
+    assert inverse.index("Youth partner details must be preserved") < inverse.index("DROP TABLE")

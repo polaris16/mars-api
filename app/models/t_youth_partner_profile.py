@@ -40,6 +40,13 @@ class YouthPartnerProfile(AuditFields, Base):
     major = Column(String(100), comment="专业")
     education_label = Column(String(50), comment="学历或在读状态")
     bio = Column(String(300), comment="公开简介")
+    specialties = Column(
+        ARRAY(String(32)),
+        nullable=False,
+        server_default=text("'{}'"),
+        comment="按展示顺序排列的擅长领域",
+    )
+    message_to_users = Column(String(500), comment="公开展示的伙伴寄语")
     tags = Column(
         ARRAY(String(32)), nullable=False, server_default=text("'{}'"), comment="展示和筛选标签"
     )

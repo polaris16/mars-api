@@ -107,7 +107,7 @@ def order_view(ctx, row, balance, booking=None, *, fulfill=False, detail=False, 
         **orders.view(row, balance),
         "booking_status": status,
         "order_id": row.id,
-        **display(booking, "confirm_by confirmed_at checked_in_at"),
+        **display(booking, "confirm_by confirmed_at checked_in_at service_duration_seconds"),
         "location": dict(row.request_data["location"]),
         "reason_text": row.request_data.get("reason_text"),
         "available_actions": actions,
@@ -312,6 +312,11 @@ def change_booking(ctx, order_id, idem, body, *, fulfill=True):
             if before != "in_progress" or booking.checked_in_at is None:
                 raise conflict("order_state_conflict", "请先完成到场核销")
             row.status, row.finished_at = "completed", now
+            # 只记录预约区间内的履约秒数，随完成流水一次提交。
+            begins = max(utc(booking.checked_in_at), utc(row.scheduled_start_at))
+            ends = min(now, utc(row.scheduled_end_at))
+            booking.service_duration_seconds = max(0, int((ends - begins).total_seconds()))
+            stamp(booking, ctx.actor_id)
             row.result_ref = f"youth-partner/{row.id}/checked-in"
             event_action = "finish_partner_service"
         else:

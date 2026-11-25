@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     text,
 )
 
@@ -18,6 +19,10 @@ class YouthPartnerBooking(AuditFields, Base):
     __table_args__ = (
         CheckConstraint(
             "blocking_start_at < blocking_end_at", name="ck_youth_partner_booking_interval"
+        ),
+        CheckConstraint(
+            "service_duration_seconds IS NULL OR service_duration_seconds >= 0",
+            name="ck_youth_partner_booking_service_duration",
         ),
         CheckConstraint(
             "confirmed_at IS NULL OR confirmed_at <= confirm_by",
@@ -64,3 +69,4 @@ class YouthPartnerBooking(AuditFields, Base):
     confirm_by = Column(DateTime(timezone=True), nullable=False, comment="伙伴确认截止时间")
     confirmed_at = Column(DateTime(timezone=True), nullable=True, comment="伙伴确认时间")
     checked_in_at = Column(DateTime(timezone=True), nullable=True, comment="到场核销时间")
+    service_duration_seconds = Column(Integer, comment="完成的服务在预约时段内实际履约的秒数")

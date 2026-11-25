@@ -72,6 +72,10 @@ from app.models.t_benefit_grant_service_location import BenefitGrantServiceLocat
 from app.models.t_youth_partner_booking import YouthPartnerBooking
 from app.models.t_youth_partner_check_in_code import YouthPartnerCheckInCode
 from app.models.t_youth_partner_rating import YouthPartnerRating
+from app.models.t_youth_partner_mark import YouthPartnerMark
+from app.models.t_chat_conversation import ChatConversation
+from app.models.t_chat_conversation_member import ChatConversationMember
+from app.models.t_chat_message import ChatMessage
 
 # [修改-旧] 原有导出列表；保留旧代码，新增模型需一并导出。
 # __all__ = ["Base", "User", "AuthSession", "InterestDomain", "UserInterest", "Topic", "TopicInterest", "TopicParticipant"]
@@ -145,4 +149,8 @@ __all__ = [
     "YouthPartnerBooking",
     "YouthPartnerCheckInCode",
     "YouthPartnerRating",
+    "YouthPartnerMark",
+    "ChatConversation",
+    "ChatConversationMember",
+    "ChatMessage",
 ]

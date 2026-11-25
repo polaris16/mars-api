@@ -17,7 +17,6 @@ from app.models import (
     BenefitServiceOrder,
     BenefitServiceVersion,
     BenefitStaff,
-    MediaAsset,
     User,
     YouthPartnerAvailability,
     YouthPartnerBooking,
@@ -41,8 +40,7 @@ from app.services.benefit_common import (
     utc,
 )
 from app.services.benefit_orders import BenefitOrderService
-from app.services.product_media import CONFIRMED, image_link
-from app.services.youth_partner_profiles import PHOTO, partner_for_user
+from app.services.youth_partner_profiles import partner_for_user, public_profile
 
 STEP = timedelta(minutes=15)
 MIN_LEAD = timedelta(minutes=30)
@@ -280,13 +278,9 @@ def schedule(ctx, day, time_zone, body=None):
         }
 
 
-def eligible_partners(version_id):
+def public_partners():
     return (
         select(YouthPartnerProfile)
-        .join(
-            YouthPartnerService,
-            YouthPartnerService.partner_id == YouthPartnerProfile.id,
-        )
         .join(User, User.id == YouthPartnerProfile.user_id)
         .join(
             BenefitStaff,
@@ -295,13 +289,25 @@ def eligible_partners(version_id):
         .where(
             YouthPartnerProfile.is_del.is_(False),
             YouthPartnerProfile.status == "approved",
-            YouthPartnerService.is_del.is_(False),
-            YouthPartnerService.status == "approved",
-            YouthPartnerService.service_version_id == version_id,
             User.is_del.is_(False),
             BenefitStaff.role == "provider",
             BenefitStaff.status == "active",
             BenefitStaff.is_del.is_(False),
+        )
+    )
+
+
+def eligible_partners(version_id):
+    return (
+        public_partners()
+        .join(
+            YouthPartnerService,
+            YouthPartnerService.partner_id == YouthPartnerProfile.id,
+        )
+        .where(
+            YouthPartnerService.is_del.is_(False),
+            YouthPartnerService.status == "approved",
+            YouthPartnerService.service_version_id == version_id,
         )
     )
 
@@ -364,7 +370,7 @@ def get_slots(ctx, balance_id, partner_id, location_id):
         }
 
 
-def _rating_stats(db, partner_ids):
+def rating_stats(db, partner_ids):
     booking, order, rating = YouthPartnerBooking, BenefitServiceOrder, YouthPartnerRating
     return {
         row[0]: row[1:]
@@ -388,13 +394,37 @@ def _rating_stats(db, partner_ids):
     }
 
 
-def _availability_label(start, now, zone):
+def availability_label(start, now, zone):
     day, today = start.astimezone(zone).date(), now.astimezone(zone).date()
     if day == today:
         return "today"
     if day == today + timedelta(days=1):
         return "tomorrow"
     return "this_week" if day <= today + timedelta(days=6 - today.weekday()) else "later"
+
+
+def public_service_labels(db, page_ids, current_version_id=None):
+    service_labels = defaultdict(list)
+    for partner_id, service_id, name in db.execute(
+        select(YouthPartnerService.partner_id, BenefitServiceVersion.id, BenefitServiceVersion.name)
+        .join(
+            BenefitServiceVersion,
+            BenefitServiceVersion.id == YouthPartnerService.service_version_id,
+        )
+        .where(
+            YouthPartnerService.partner_id.in_(page_ids),
+            YouthPartnerService.is_del.is_(False),
+            YouthPartnerService.status == "approved",
+            BenefitServiceVersion.is_del.is_(False),
+            or_(
+                BenefitServiceVersion.status == "published",
+                BenefitServiceVersion.id == current_version_id,
+            ),
+        )
+        .order_by(BenefitServiceVersion.id)
+    ):
+        service_labels[partner_id].append({"service_version_id": service_id, "name": name})
+    return service_labels
 
 
 def list_partners(
@@ -423,7 +453,7 @@ def list_partners(
         offset = (page - 1) * size
         total = len(candidates)
         if sort == "rating_desc":
-            stats = _rating_stats(ctx.db, [p.id for p in candidates])
+            stats = rating_stats(ctx.db, [p.id for p in candidates])
             candidates.sort(key=lambda p: (-(stats.get(p.id, (0, None, 0))[1] or 0), p.id))
         if not today_only:
             candidates = candidates[offset : offset + size]
@@ -440,7 +470,7 @@ def list_partners(
                 )
                 if slot:
                     earliest = slot["starts_at"]
-                    label = _availability_label(earliest, now, _zone(location.time_zone))
+                    label = availability_label(earliest, now, _zone(location.time_zone))
             if not today_only or label == "today":
                 eligible.append((partner, earliest, label))
         if today_only:
@@ -448,45 +478,17 @@ def list_partners(
             eligible = eligible[offset : offset + size]
         page_ids = [partner.id for partner, _, _ in eligible]
         if sort != "rating_desc":
-            stats = _rating_stats(ctx.db, page_ids)
-        service_labels = defaultdict(list)
-        for partner_id, service_id, name in ctx.db.execute(
-            select(
-                YouthPartnerService.partner_id, BenefitServiceVersion.id, BenefitServiceVersion.name
-            )
-            .join(
-                BenefitServiceVersion,
-                BenefitServiceVersion.id == YouthPartnerService.service_version_id,
-            )
-            .where(
-                YouthPartnerService.partner_id.in_(page_ids),
-                YouthPartnerService.is_del.is_(False),
-                YouthPartnerService.status == "approved",
-                BenefitServiceVersion.is_del.is_(False),
-                or_(
-                    BenefitServiceVersion.status == "published",
-                    BenefitServiceVersion.id == version.id,
-                ),
-            )
-            .order_by(BenefitServiceVersion.id)
-        ):
-            service_labels[partner_id].append({"service_version_id": service_id, "name": name})
+            stats = rating_stats(ctx.db, page_ids)
+        service_labels = public_service_labels(ctx.db, page_ids, version.id)
         results = []
         for partner, earliest, label in eligible:
             count, mean, rating_count = stats.get(partner.id, (0, None, 0))
-            photo = ctx.db.get(MediaAsset, partner.photo_asset_id)
             results.append(
                 {
-                    **display(partner, "display_name major education_label bio tags"),
+                    **public_profile(ctx.db, partner, storage),
                     "partner_id": partner.id,
                     "service_version_id": version.id,
                     "services": service_labels[partner.id],
-                    "photo": image_link(photo, storage)
-                    if photo
-                    and not photo.is_del
-                    and photo.purpose == PHOTO
-                    and photo.upload_status in CONFIRMED
-                    else None,
                     "completed_service_count": count,
                     "average_rating": round(float(mean), 2) if mean is not None else None,
                     "rating_count": rating_count,

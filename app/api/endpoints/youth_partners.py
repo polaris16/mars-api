@@ -19,6 +19,9 @@ from app.schemas.youth_partners import (
     PartnerAction,
     PartnerProfileInput,
     PartnerReview,
+    PartnerDetailsView,
+    PartnerMarkView,
+    PartnerPublicDetailsInput,
     PartnerStatus,
     PhotoComplete,
     RatingInput,
@@ -36,6 +39,7 @@ from app.schemas.youth_partners import (
     UploadCompleteView,
 )
 from app.services import youth_partner_bookings as bookings
+from app.services import youth_partner_details as details
 from app.services import youth_partner_profiles as profiles
 from app.services import youth_partner_schedule as schedule
 
@@ -54,6 +58,57 @@ PLACE = "/enterprises/{enterprise_id}/benefit-grants/{grant_id}/service-location
 BALANCE = f"{ME}/benefit-balances/{{balance_id}}"
 ORDER = f"{ME}/benefit-service-orders/{{id}}"
 FULFILLMENT = "/fulfillment/benefit-service-orders"
+MARKS = f"{ME}/youth-partner-marks"
+
+
+@router.get(
+    "/youth-partners/{partner_id}",
+    response_model=PartnerDetailsView,
+    summary="查询青年伙伴公开详情",
+)
+def get_youth_partner_details(
+    ctx: Context,
+    storage: Storage,
+    partner_id: Id,
+    balance_id: Annotated[int | None, Query(gt=0, le=2**63 - 1)] = None,
+    location_id: Annotated[int | None, Query(gt=0, le=2**63 - 1)] = None,
+):
+    return details.get_details(ctx, storage, partner_id, balance_id, location_id)
+
+
+@router.patch(
+    f"{OPS}/{{partner_id}}/public-details",
+    response_model=PartnerApplicationView,
+    summary="维护已上架伙伴的擅长领域及寄语",
+)
+def revise_youth_partner_public_details(
+    ctx: Context,
+    storage: Storage,
+    partner_id: Id,
+    body: PartnerPublicDetailsInput,
+):
+    return profiles.revise_public_details(ctx, partner_id, body, storage)
+
+
+@router.put(f"{MARKS}/{{partner_id}}", status_code=204, summary="收藏青年伙伴")
+def mark_youth_partner(ctx: Context, partner_id: Id):
+    details.set_mark(ctx, partner_id, marked=True)
+
+
+@router.delete(f"{MARKS}/{{partner_id}}", status_code=204, summary="取消收藏青年伙伴")
+def unmark_youth_partner(ctx: Context, partner_id: Id):
+    details.set_mark(ctx, partner_id, marked=False)
+
+
+@router.get(MARKS, response_model=BenefitPage[PartnerMarkView], summary="查询我的青年伙伴收藏")
+def list_youth_partner_marks(
+    ctx: Context,
+    storage: Storage,
+    page: Page,
+    sort: Literal["default", "marked_at_asc", "marked_at_desc"] = "default",
+    paginate: PaginateOnly = True,
+):
+    return details.list_marks(ctx, storage, page.number, page.size, sort)
 
 
 @router.get(PROFILE, response_model=PartnerApplicationView, summary="读取本人的青年伙伴资料")

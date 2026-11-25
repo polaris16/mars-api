@@ -36,7 +36,8 @@ PHOTO = "partner_photo"
 IDENTITY = "partner_identity"
 EDITABLE = {"draft", "rejected"}
 PROFILE_FIELDS = (
-    "display_name major education_label bio tags photo_asset_id status reviewed_at review_notes"
+    "display_name major education_label bio tags photo_asset_id status reviewed_at review_notes "
+    "specialties message_to_users"
 )
 SIDE_FIELDS = {"portrait": "portrait_side_asset_id", "emblem": "emblem_side_asset_id"}
 
@@ -71,6 +72,19 @@ def _services(ctx, partner_id):
 def _identity(ctx, partner_id):
     row = ctx.db.get(YouthPartnerIdentityDocument, partner_id)
     return row if row and not row.is_del else None
+
+
+def public_profile(db, row, storage):
+    asset = db.get(MediaAsset, row.photo_asset_id) if row.photo_asset_id else None
+    photo = (
+        image_link(asset, storage)
+        if asset
+        and not asset.is_del
+        and asset.purpose == PHOTO
+        and asset.upload_status in CONFIRMED
+        else None
+    )
+    return {**display(row, "display_name major education_label bio tags"), "photo": photo}
 
 
 def profile_view(ctx, row, storage=None):
@@ -155,11 +169,31 @@ def save_profile(ctx, body, storage):
         for name in ("display_name", "major", "education_label", "bio", "photo_asset_id"):
             setattr(row, name, getattr(body, name))
         row.tags = list(dict.fromkeys(body.tags))
+        apply_public_details(row, body)
         row.service_area_codes = list(dict.fromkeys(body.requested_area_codes))
         stamp(row, ctx.actor_id)
         ctx.db.flush()
         _replace_services(ctx, row, body.requested_service_version_ids, "pending")
         ctx.db.flush()
+        return profile_view(ctx, row, storage)
+
+
+def apply_public_details(row, body):
+    # 老版本客户端省略的新字段沿用当前值。
+    if "specialties" in body.model_fields_set:
+        row.specialties = list(dict.fromkeys(body.specialties))
+    if "message_to_users" in body.model_fields_set:
+        row.message_to_users = body.message_to_users
+
+
+def revise_public_details(ctx, partner_id, body, storage):
+    with ctx.db.begin():
+        ctx.require_platform("admin", "ops")
+        row = active_row(ctx.db, YouthPartnerProfile, partner_id, lock=True)
+        if row.status != "approved":
+            raise conflict("partner_review_state", "仅已审核通过的伙伴可更新公开资料")
+        apply_public_details(row, body)
+        stamp(row, ctx.actor_id)
         return profile_view(ctx, row, storage)
 
 

@@ -22,7 +22,12 @@ def zone_for(value: str) -> ZoneInfo:
         raise ValueError("请选择有效的 IANA 时区") from exc
 
 
-class PartnerProfileInput(BenefitInput):
+class PartnerPublicDetailsInput(BenefitInput):
+    specialties: Annotated[list[Label], Field(max_length=20)] = Field(default_factory=list)
+    message_to_users: Note | None = None
+
+
+class PartnerProfileInput(PartnerPublicDetailsInput):
     display_name: Name
     major: Name | None = None
     education_label: Annotated[str, StringConstraints(max_length=50)] | None = None
@@ -174,11 +179,36 @@ class PartnerApplicationView(PartnerDisplay):
     requested_service_version_ids: list[int]
     requested_area_codes: list[str]
     identity_upload_status: dict[Side, bool]
+    specialties: list[str]
+    message_to_users: str | None
 
 
 class PartnerServiceLabel(BaseModel):
     service_version_id: int
     name: str
+
+
+class PartnerDetailsView(PartnerDisplay):
+    partner_id: int
+    specialties: list[str]
+    message_to_users: str | None
+    services: list[PartnerServiceLabel]
+    completed_service_count: int
+    total_service_seconds: int
+    average_rating: float | None
+    rating_count: int
+    is_marked: bool
+    can_book: bool = False
+    can_consult: bool = False
+    earliest_start_at: datetime | None = None
+    availability_label: Literal["today", "tomorrow", "this_week", "later"] | None = None
+
+
+class PartnerMarkView(BaseModel):
+    partner_id: int
+    is_available: bool
+    marked_at: datetime
+    partner: PartnerDisplay | None
 
 
 class PartnerCardView(PartnerDisplay):
