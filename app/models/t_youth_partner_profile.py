@@ -47,6 +47,7 @@ class YouthPartnerProfile(AuditFields, Base):
         comment="按展示顺序排列的擅长领域",
     )
     message_to_users = Column(String(500), comment="公开展示的伙伴寄语")
+    calendar_time_zone = Column(String(64), comment="青年伙伴发布时间表所用的 IANA 时区")
     tags = Column(
         ARRAY(String(32)), nullable=False, server_default=text("'{}'"), comment="展示和筛选标签"
     )

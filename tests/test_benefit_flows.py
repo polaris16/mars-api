@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import JSON, Integer, text
+from sqlalchemy import JSON, DateTime, Integer, TypeDecorator, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.core.config import get_settings
@@ -23,6 +23,19 @@ from test_user_relationships import client, login
 USER = "/api/users/me"
 OPS = "/api/ops"
 FULFILL = "/api/fulfillment/benefit-service-orders"
+
+
+class TimestampArrayJSON(TypeDecorator):
+    """隔离 SQLite 以 JSON 保存 PostgreSQL 的时间数组。"""
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return [item.isoformat() for item in value] if value is not None else None
+
+    def process_result_value(self, value, dialect):
+        return [datetime.fromisoformat(item) for item in value] if value is not None else None
 
 
 @pytest.fixture
@@ -59,8 +72,17 @@ def benefits(client, monkeypatch, tmp_path):
                 )
             for col in table.c:
                 if isinstance(col.type, (ARRAY, JSONB)):
-                    default = "'[]'" if isinstance(col.type, ARRAY) else "'{}'"
-                    monkeypatch.setattr(col, "type", col.type.with_variant(JSON(), "sqlite"))
+                    if isinstance(col.type, ARRAY):
+                        sqlite_type = (
+                            TimestampArrayJSON()
+                            if isinstance(col.type.item_type, DateTime)
+                            else JSON()
+                        )
+                        default = "'[]'"
+                    else:
+                        sqlite_type = JSON()
+                        default = str(col.server_default.arg).replace("::jsonb", "")
+                    monkeypatch.setattr(col, "type", col.type.with_variant(sqlite_type, "sqlite"))
                     monkeypatch.setattr(col.server_default, "arg", text(default))
             for constraint in table.constraints:
                 if constraint.name == "ck_benefit_grant_phone_last4":

@@ -34,7 +34,7 @@ from app.services.benefit_common import (
 from app.services.benefit_orders import BenefitOrderService, EVENT_FIELDS
 from app.services.youth_partner_schedule import (
     MIN_LEAD,
-    available_slots,
+    classify_slots,
     balance_for,
     eligible_partner,
     location_for,
@@ -162,12 +162,14 @@ def create_booking(ctx, balance_id, idem, body):
         slot = next(
             (
                 slot
-                for slot in available_slots(ctx.db, profile, location, version, grant, now)
+                for slot in classify_slots(ctx.db, profile, location, version, grant, now)
                 if slot["starts_at"] == starts_at
             ),
             None,
         )
-        if slot is None:
+        if slot is not None and slot["reason"] == "recipient_schedule_conflict":
+            raise conflict("recipient_schedule_conflict", "您在该时段已有其他青年伙伴预约")
+        if slot is None or slot["status"] != "available":
             raise conflict("appointment_slot_unavailable", "该时段已不可预约，请刷新档期")
         ends_at = slot["ends_at"]
         full_location = location_view(location, keys)

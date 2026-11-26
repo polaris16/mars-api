@@ -18,6 +18,7 @@ from app.api.endpoints.memory_contributors import router as memory_contributors_
 from app.api.endpoints.memory_session_members import router as memory_session_members_router
 from app.api.endpoints.product_experience import router as product_experience_router
 from app.api.endpoints.youth_partners import router as youth_partners_router
+from app.api.endpoints.youth_partner_calendar import router as youth_partner_calendar_router
 from app.api.endpoints.chat import router as chat_router
 
 api_router = APIRouter()
@@ -38,4 +39,5 @@ api_router.include_router(memory_session_members_router)
 api_router.include_router(memory_contributors_router)
 api_router.include_router(product_experience_router)  # 产品目录、体验和好友分享。
 api_router.include_router(youth_partners_router)
+api_router.include_router(youth_partner_calendar_router)
 api_router.include_router(chat_router)

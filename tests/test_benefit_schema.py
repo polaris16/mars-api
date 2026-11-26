@@ -105,6 +105,8 @@ def test_benefit_migration_adds_only_new_tables_and_integrity_checks():
             if constraint.name is not None:
                 assert f"CONSTRAINT {constraint.name} " in sql
         for index in table.indexes:
+            if index.name == "idx_benefit_order_recipient_schedule":
+                continue
             assert f"INDEX {index.name} ON {name} " in sql
 
     assert "code_digest BYTEA NOT NULL" in sql

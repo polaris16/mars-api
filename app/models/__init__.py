@@ -68,6 +68,8 @@ from app.models.t_youth_partner_service import YouthPartnerService
 from app.models.t_youth_partner_identity_document import YouthPartnerIdentityDocument
 from app.models.t_youth_partner_identity_access import YouthPartnerIdentityAccess
 from app.models.t_youth_partner_availability import YouthPartnerAvailability
+from app.models.t_youth_partner_availability_template import YouthPartnerAvailabilityTemplate
+from app.models.t_youth_partner_calendar_day import YouthPartnerCalendarDay
 from app.models.t_benefit_grant_service_location import BenefitGrantServiceLocation
 from app.models.t_youth_partner_booking import YouthPartnerBooking
 from app.models.t_youth_partner_check_in_code import YouthPartnerCheckInCode
@@ -145,6 +147,8 @@ __all__ = [
     "YouthPartnerIdentityDocument",
     "YouthPartnerIdentityAccess",
     "YouthPartnerAvailability",
+    "YouthPartnerAvailabilityTemplate",
+    "YouthPartnerCalendarDay",
     "BenefitGrantServiceLocation",
     "YouthPartnerBooking",
     "YouthPartnerCheckInCode",

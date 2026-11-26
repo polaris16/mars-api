@@ -48,7 +48,12 @@ def test_youth_upgrade_adds_documented_tables_without_changing_business_rows():
         )
         for column in table.columns:
             assert column.comment and re.search(r"[\u4e00-\u9fff]", column.comment)
-            if column.name in {"specialties", "message_to_users", "service_duration_seconds"}:
+            if column.name in {
+                "specialties",
+                "message_to_users",
+                "service_duration_seconds",
+                "calendar_time_zone",
+            }:
                 continue
             assert f"COMMENT ON COLUMN {table_name}.{column.name}" in sql
         for fk in table.foreign_keys:

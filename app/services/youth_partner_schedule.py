@@ -20,6 +20,7 @@ from app.models import (
     User,
     YouthPartnerAvailability,
     YouthPartnerBooking,
+    YouthPartnerCalendarDay,
     YouthPartnerProfile,
     YouthPartnerRating,
     YouthPartnerService,
@@ -164,15 +165,57 @@ def busy_windows(db, user_id, first, last, now, *, exclude_id=None):
             end > first,
             or_(
                 booking.service_order_id.is_(None),
-                order.status == "in_progress",
-                and_(booking.confirmed_at.is_(None), booking.confirm_by > now),
-                and_(booking.confirmed_at.is_not(None), order.scheduled_end_at > now),
+                _valid_youth_hold(now),
             ),
         )
     )
     if exclude_id is not None:
         query = query.where(order.id != exclude_id)
     return [(utc(a), utc(b)) for a, b in db.execute(query.order_by(start))]
+
+
+def _valid_youth_hold(now):
+    order, booking = BenefitServiceOrder, YouthPartnerBooking
+    return or_(
+        order.status == "in_progress",
+        and_(booking.confirmed_at.is_(None), booking.confirm_by > now),
+        and_(booking.confirmed_at.is_not(None), order.scheduled_end_at > now),
+    )
+
+
+def _youth_holds(first, last, now):
+    order, booking = BenefitServiceOrder, YouthPartnerBooking
+    return (
+        select(order.scheduled_start_at, order.scheduled_end_at)
+        .join(booking, booking.service_order_id == order.id)
+        .where(
+            order.is_del.is_(False),
+            booking.is_del.is_(False),
+            order.status.in_(("reserved", "in_progress")),
+            order.scheduled_start_at < last,
+            order.scheduled_end_at > first,
+            _valid_youth_hold(now),
+        )
+    )
+
+
+def recipient_windows(db, user_id, first, last, now):
+    rows = db.execute(
+        _youth_holds(first, last, now).where(BenefitServiceOrder.requested_by_user_id == user_id)
+    )
+    return [(utc(start), utc(end)) for start, end in rows]
+
+
+def protected_youth_starts(db, user_id, first, last, now):
+    query = (
+        _youth_holds(first, last, now)
+        .where(
+            BenefitServiceOrder.assignee_user_id == user_id,
+            BenefitServiceOrder.scheduled_start_at >= first,
+        )
+        .with_only_columns(BenefitServiceOrder.scheduled_start_at)
+    )
+    return {utc(start) for start in db.scalars(query)}
 
 
 def _opening_rows(db, partner_id, first, last):
@@ -214,6 +257,25 @@ def _zone(value):
         raise BenefitError(422, "invalid_time_zone", str(exc)) from exc
 
 
+def published_days(db, partner, first, last):
+    if not partner.calendar_time_zone:
+        return {}
+    zone = _zone(partner.calendar_time_zone)
+    start_day = first.astimezone(zone).date()
+    end_day = (last - timedelta(microseconds=1)).astimezone(zone).date()
+    day = YouthPartnerCalendarDay
+    return {
+        row.schedule_date: row
+        for row in db.scalars(
+            select(day).where(
+                day.partner_id == partner.id,
+                day.schedule_date.between(start_day, end_day),
+                day.is_del.is_(False),
+            )
+        )
+    }
+
+
 def schedule(ctx, day, time_zone, body=None):
     zone = _zone(time_zone)
     now = now_utc()
@@ -235,6 +297,10 @@ def schedule(ctx, day, time_zone, body=None):
         existing = _opening_rows(ctx.db, row.id, first, last)
         busy = busy_windows(ctx.db, row.user_id, first, last, now)
         if body is not None:
+            # 发布可能在等待岗位锁时改变了日历时区。
+            ctx.db.refresh(row)
+            if published_days(ctx.db, row, first, last):
+                raise conflict("calendar_day_managed", "请通过新版预约日历修改已发布日期")
             windows = _merged([(utc(item.starts_at), utc(item.ends_at)) for item in body.windows])
             if any(start < first or end > last for start, end in windows):
                 raise BenefitError(422, "invalid_schedule_window", "开放时段须位于所选日期内")
@@ -313,7 +379,11 @@ def eligible_partners(version_id):
 
 
 def eligible_partner(ctx, version_id, partner_id, area_code):
-    row = ctx.db.scalar(eligible_partners(version_id).where(YouthPartnerProfile.id == partner_id))
+    row = ctx.db.scalar(
+        eligible_partners(version_id)
+        .where(YouthPartnerProfile.id == partner_id)
+        .execution_options(populate_existing=True)
+    )
     if row is None or area_code not in row.service_area_codes:
         raise missing()
     return row
@@ -327,36 +397,71 @@ def schedule_bounds(location, now):
     return zone, first, last
 
 
-def available_slots(db, partner, location, version, grant, now, *, first_only=False):
+def _start_times(first, last, zone, calendar_zone, managed, openings, before, after, duration):
+    published = sorted(utc(start) for row in managed.values() for start in row.booking_starts)
+    for origin, close in openings:
+        lower, upper = max(first, origin + before), min(last, close - after) - duration
+        if lower > upper:
+            continue
+        candidates = {start for start in published if lower <= start <= upper}
+        # 旧版只按地点时区的 15 分钟步长生成，显式发布的日期只使用库中时间。
+        local = lower.astimezone(zone)
+        start = utc(local.replace(minute=local.minute // 15 * 15, second=0, microsecond=0))
+        if start < lower:
+            start += STEP
+        while start <= upper:
+            if start.astimezone(calendar_zone).date() not in managed:
+                candidates.add(start)
+            start += STEP
+        yield from sorted(candidates)
+
+
+def classify_slots(db, partner, location, version, grant, now, *, balance=None):
     zone, first, last = schedule_bounds(location, now)
     duration = timedelta(minutes=version.offline_duration_minutes)
     before = timedelta(minutes=location.travel_before_minutes)
     after = timedelta(minutes=location.travel_after_minutes)
-    lower, upper = max(now + MIN_LEAD, utc(grant.valid_from)), min(last, utc(grant.valid_until))
     opening = _merged(
         [
             (utc(row.starts_at), utc(row.ends_at))
             for row in _opening_rows(db, partner.id, first - before, last + after)
         ]
     )
-    busy = busy_windows(db, partner.user_id, first - before, last + after, now)
-    for origin, close in opening:
-        starting = max(lower, origin + before)
-        ending = min(upper, close - after)
-        local = starting.astimezone(zone)
-        floor = local.replace(minute=local.minute // 15 * 15, second=0, microsecond=0)
-        start = utc(floor)
-        if start < starting:
-            start += STEP
-        while start + duration <= ending:
-            finish = start + duration
-            if start > now + MIN_LEAD and all(
-                b <= start - before or finish + after <= a for a, b in busy
-            ):
-                yield {"starts_at": start, "ends_at": finish}
-                if first_only:
-                    return
-            start += STEP
+    managed = published_days(db, partner, first, last)
+    calendar_zone = _zone(partner.calendar_time_zone) if partner.calendar_time_zone else zone
+    provider_busy = busy_windows(db, partner.user_id, first - before, last + after, now)
+    customer_busy = recipient_windows(db, grant.recipient_user_id, first, last, now)
+    valid_from, valid_until = utc(grant.valid_from), utc(grant.valid_until)
+    no_quota = (
+        balance is not None and balance.used_count + balance.reserved_count >= balance.granted_count
+    )
+    for start in _start_times(
+        max(first, now), last, zone, calendar_zone, managed, opening, before, after, duration
+    ):
+        finish = start + duration
+        status, reason = "available", None
+        if any(a < finish + after and start - before < b for a, b in provider_busy):
+            status = "occupied"
+        else:
+            if start <= now + MIN_LEAD:
+                reason = "booking_cutoff"
+            elif not valid_from <= now < valid_until or finish > valid_until:
+                reason = "benefit_not_active"
+            elif no_quota:
+                reason = "benefit_quota_exhausted"
+            elif any(a < finish and start < b for a, b in customer_busy):
+                reason = "recipient_schedule_conflict"
+            if reason:
+                status = "unavailable"
+        yield {"starts_at": start, "ends_at": finish, "status": status, "reason": reason}
+
+
+def available_slots(db, partner, location, version, grant, now, *, first_only=False):
+    for slot in classify_slots(db, partner, location, version, grant, now):
+        if slot["status"] == "available":
+            yield {key: slot[key] for key in ("starts_at", "ends_at")}
+            if first_only:
+                return
 
 
 def get_slots(ctx, balance_id, partner_id, location_id):

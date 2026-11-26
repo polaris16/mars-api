@@ -69,6 +69,13 @@ class BenefitServiceOrder(AuditFields, Base):
         ),
         Index("idx_benefit_order_balance", "balance_id", "id"),
         Index(
+            "idx_benefit_order_recipient_schedule",
+            "requested_by_user_id",
+            "scheduled_start_at",
+            "id",
+            postgresql_where=text("is_del = false AND status IN ('reserved', 'in_progress')"),
+        ),
+        Index(
             "idx_benefit_order_assignee_schedule",
             "assignee_user_id",
             "status",
