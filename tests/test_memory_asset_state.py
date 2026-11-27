@@ -330,6 +330,7 @@ def test_asset_status_after_removing_one_then_last_reference(sessions, remove):
                     FragmentAttachment(
                         id=record_id,
                         fragment_id=record_id,
+                        session_id=record_id,
                         media_asset_id=1,
                         contributor_id=record_id,
                     )

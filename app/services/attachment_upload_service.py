@@ -15,7 +15,7 @@ from app.schemas.attachment_upload import (
 from app.schemas.memory import AttachmentInput, UploadAuthorizationRequest, UploadCompleteRequest
 from app.services.memory_service import (
     CONFIRMED_UPLOAD_STATES,
-    MAX_ATTACHMENTS_PER_FRAGMENT,
+    MAX_ATTACHMENTS_PER_SESSION,
     MemoryService,
     UploadItemError,
 )
@@ -26,11 +26,11 @@ class AttachmentUploadService:
     def __init__(self) -> None:
         self.memory = MemoryService()
 
-    def _check_target(self, db: Session, user: User, fragment_id: int) -> int:
+    def _check_target(self, db: Session, user: User, target_id: int, *, story: bool) -> int:
         # 进入批次前按常规 HTTP 状态处理目标权限，逐项写入时还会加锁复核。
         db.rollback()
         with db.begin():
-            _, memory, role = self.memory._fragment_access(db, user.id, fragment_id)
+            memory, role = self.memory._attachment_target(db, user.id, target_id, story=story)
             self.memory._require_contribution(db, memory, user, role)
             return memory.id
 
@@ -58,11 +58,13 @@ class AttachmentUploadService:
         self,
         db: Session,
         user: User,
-        fragment_id: int,
+        target_id: int,
         body: AttachmentUploadBatch,
         storage: ObjectStorageService,
+        *, story: bool = False,
     ) -> dict:
-        self._check_target(db, user, fragment_id)
+        self._check_target(db, user, target_id, story=story)
+        fragment_id = None if story else target_id
         ask = body.duplicate_mode == "ask"
         representatives: dict[int, UUID] = {}
         upload_grants: dict[UUID, int] = {}
@@ -75,6 +77,7 @@ class AttachmentUploadService:
                     UploadAuthorizationRequest(
                         purpose="attachment",
                         fragment_id=fragment_id,
+                        session_id=target_id if story else None,
                         **item.model_dump(exclude={"client_file_id"}),
                     ),
                     storage,
@@ -120,11 +123,13 @@ class AttachmentUploadService:
         self,
         db: Session,
         user: User,
-        fragment_id: int,
+        target_id: int,
         body: AttachmentCompleteBatch,
         storage: ObjectStorageService,
+        *, story: bool = False,
     ) -> dict:
-        memory_id = self._check_target(db, user, fragment_id)
+        memory_id = self._check_target(db, user, target_id, story=story)
+        fragment_id = None if story else target_id
         user_id = user.id
         ask = body.duplicate_mode == "ask"
         # 先完成代表项，再处理依赖项。响应仍按 App 传入的顺序返回。
@@ -140,11 +145,11 @@ class AttachmentUploadService:
                     item.representative_client_file_id or item.client_file_id,
                 )
                 asset_id = self._verify_file(
-                    db, user, user_id, fragment_id, item, storage, upload_key, verification_errors
+                    db, user, user_id, memory_id, fragment_id, item, storage, upload_key, verification_errors
                 )
                 # 确认结果独立提交，写入关联之前结束可能由素材读取开启的事务。
                 db.rollback()
-                result = self._attach(db, user, user_id, fragment_id, asset_id, item, ask=ask)
+                result = self._attach(db, user, user_id, target_id, asset_id, item, ask=ask, story=story)
             except HTTPException as exc:
                 db.rollback()
                 result = self._item_error(item.client_file_id, exc, authorizing=False)
@@ -157,13 +162,16 @@ class AttachmentUploadService:
         db: Session,
         user: User,
         user_id: int,
-        fragment_id: int,
+        memory_id: int,
+        fragment_id: int | None,
         item: AttachmentCompleteItem,
         storage: ObjectStorageService,
         upload_key: str,
         verification_errors: dict[tuple[int, str], HTTPException],
     ) -> int:
-        operation = self.memory._attachment_operation(db, fragment_id, user_id, item.client_file_id)
+        operation = self.memory._attachment_operation(
+            db, memory_id, user_id, item.client_file_id, fragment_id=fragment_id
+        )
         if operation is not None and operation.media_asset_id != item.asset_id:
             requested = self.memory._asset(db, user_id, item.asset_id)
             resolved = self.memory._batch_completion_asset(db, requested, upload_key)
@@ -205,31 +213,33 @@ class AttachmentUploadService:
         db: Session,
         user: User,
         user_id: int,
-        fragment_id: int,
+        target_id: int,
         asset_id: int,
         item: AttachmentCompleteItem,
         *,
         ask: bool,
+        story: bool,
     ) -> dict:
         with db.begin():
-            _, memory, role = self.memory._fragment_access(db, user_id, fragment_id, lock=True)
+            memory, role = self.memory._attachment_target(db, user_id, target_id, story=story, lock=True)
+            fragment_id = None if story else target_id
             contributor = self.memory._require_contribution(db, memory, user, role)
             asset = self.memory._asset(db, user_id, asset_id, lock=True)
             if asset.purpose != "attachment" or asset.upload_status not in CONFIRMED_UPLOAD_STATES:
                 raise UploadItemError(404, "此素材不可用于该附件上传", code="asset_unavailable")
             active = (
-                FragmentAttachment.fragment_id == fragment_id,
+                FragmentAttachment.session_id == memory.id,
                 FragmentAttachment.is_del.is_(False),
             )
             result = {"client_file_id": item.client_file_id, "asset_id": asset.id}
             # 操作级幂等优先于按文件查重。保留多份后仍返回该操作的关联 ID。
             operation = self.memory._attachment_operation(
-                db, fragment_id, user_id, item.client_file_id
+                db, memory.id, user_id, item.client_file_id, fragment_id=fragment_id
             )
             if operation is not None:
                 self._check_operation_asset(operation, asset.id)
                 return {**result, "status": "already_attached", "attachment_id": operation.id}
-            attachment_id = self.memory._active_attachment_id(db, fragment_id, asset.id)
+            attachment_id = self.memory._active_attachment_id(db, memory.id, asset.id)
             if item.duplicate_action == "skip":
                 return {**result, "status": "skipped", "attachment_id": attachment_id}
             if item.duplicate_action != "keep" and (
@@ -242,10 +252,10 @@ class AttachmentUploadService:
                 }
 
             count = db.scalar(select(func.count(FragmentAttachment.id)).where(*active)) or 0
-            if count >= MAX_ATTACHMENTS_PER_FRAGMENT:
+            if count >= MAX_ATTACHMENTS_PER_SESSION:
                 raise UploadItemError(
                     409,
-                    "每段记忆最多关联 9 个有效附件",
+                    "每个故事最多关联 9 个有效附件",
                     code="attachment_limit_reached",
                     retryable=True,
                 )
@@ -253,6 +263,7 @@ class AttachmentUploadService:
                 contributor = self.memory._owner_contributor(db, memory, user)
             link = self.memory._add_attachment_link(
                 db,
+                memory.id,
                 fragment_id,
                 contributor.id,
                 user_id,
@@ -263,5 +274,6 @@ class AttachmentUploadService:
                 client_file_id=item.client_file_id if ask else None,
             )
             db.flush()
-            self.memory._schedule_attachments_added(db, memory, fragment_id, user_id)
+            if fragment_id is not None:
+                self.memory._schedule_attachments_added(db, memory, fragment_id, user_id)
             return {**result, "status": "attached", "attachment_id": link.id}

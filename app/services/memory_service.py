@@ -46,7 +46,7 @@ from app.services.object_storage_service import ObjectStorageService
 from app.services.topic_service import TopicService
 from app.services.user_relationship_service import UserRelationshipService
 
-MAX_ATTACHMENTS_PER_FRAGMENT = 9
+MAX_ATTACHMENTS_PER_SESSION = 9
 CONFIRMED_UPLOAD_STATES = {"uploaded", "attached"}
 # 录音与素材入口只读取回忆录用途，产品体验由独立入口鉴权。
 MEMORY_MEDIA_PURPOSES = ("recording", "source", "attachment")
@@ -479,10 +479,8 @@ class MemoryService:
             attachment_count = (
                 session.scalar(
                     select(func.count(FragmentAttachment.id))
-                    .join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id)
                     .where(
-                        MemoryFragment.session_id == row.id,
-                        MemoryFragment.is_del.is_(False),
+                        FragmentAttachment.session_id == row.id,
                         FragmentAttachment.is_del.is_(False),
                     )
                 )
@@ -564,7 +562,6 @@ class MemoryService:
                     MemoryFragment.session_id == row.id, MemoryFragment.is_del.is_(False)
                 )
             ).all()
-            fragment_ids = [fragment.id for fragment in fragments]
             affected_asset_ids = {
                 fragment.source_asset_id
                 for fragment in fragments
@@ -574,18 +571,17 @@ class MemoryService:
                 fragment.is_del = True
                 fragment.updated_by = user.id
                 fragment.updated_at = now
-            if fragment_ids:
-                attachments = session.scalars(
-                    select(FragmentAttachment).where(
-                        FragmentAttachment.fragment_id.in_(fragment_ids),
-                        FragmentAttachment.is_del.is_(False),
-                    )
-                ).all()
-                for attachment in attachments:
-                    attachment.is_del = True
-                    attachment.updated_by = user.id
-                    attachment.updated_at = now
-                    affected_asset_ids.add(attachment.media_asset_id)
+            attachments = session.scalars(
+                select(FragmentAttachment).where(
+                    FragmentAttachment.session_id == row.id,
+                    FragmentAttachment.is_del.is_(False),
+                )
+            ).all()
+            for attachment in attachments:
+                attachment.is_del = True
+                attachment.updated_by = user.id
+                attachment.updated_at = now
+                affected_asset_ids.add(attachment.media_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
             # 该会话的历史元素可能支撑其他会话的核对问题。
             if row.visibility is not None:
@@ -596,9 +592,9 @@ class MemoryService:
     # 在既有作用域格式内区分批量尝试与服务端生成的单文件上传键。
     @staticmethod
     def batch_attachment_upload_key(
-        user_id: int, session_id: int, fragment_id: int, client_file_id: uuid.UUID
+        user_id: int, session_id: int, fragment_id: int | None, client_file_id: uuid.UUID
     ) -> str:
-        return f"users/{user_id}/attachment/scope/{session_id}/{fragment_id}/batch-{client_file_id.hex}"
+        return f"users/{user_id}/attachment/scope/{session_id}/{fragment_id or 0}/batch-{client_file_id.hex}"
 
     @staticmethod
     def _find_confirmed_upload(
@@ -673,11 +669,11 @@ class MemoryService:
 
     # 有效关联按 ID 选择，文件被保留多次时也能返回稳定的代表关联。
     @staticmethod
-    def _active_attachment_id(session: Session, fragment_id: int, asset_id: int) -> int | None:
+    def _active_attachment_id(session: Session, session_id: int, asset_id: int) -> int | None:
         return session.scalar(
             select(FragmentAttachment.id)
             .where(
-                FragmentAttachment.fragment_id == fragment_id,
+                FragmentAttachment.session_id == session_id,
                 FragmentAttachment.media_asset_id == asset_id,
                 FragmentAttachment.is_del.is_(False),
             )
@@ -687,11 +683,13 @@ class MemoryService:
 
     @staticmethod
     def _attachment_operation(
-        session: Session, fragment_id: int, user_id: int, client_file_id: uuid.UUID
+        session: Session, session_id: int, user_id: int, client_file_id: uuid.UUID,
+        *, fragment_id: int | None
     ) -> FragmentAttachment | None:
         # 软删除后保留操作记录，旧请求重放时不能重新创建附件。
         link = session.scalar(
             select(FragmentAttachment).where(
+                FragmentAttachment.session_id == session_id,
                 FragmentAttachment.fragment_id == fragment_id,
                 FragmentAttachment.created_by == user_id,
                 FragmentAttachment.client_file_id == client_file_id,
@@ -757,10 +755,9 @@ class MemoryService:
         elif body.purpose == "attachment":
             if (
                 body.media_type not in {"image", "video", "audio"}
-                or body.fragment_id is None
-                or body.session_id is not None
+                or (body.fragment_id is None) == (body.session_id is None)
             ):
-                raise HTTPException(status_code=422, detail="附件上传需要 fragment_id")
+                raise HTTPException(status_code=422, detail="附件上传需要 session_id / fragment_id")
         else:
             if (
                 body.media_type not in {"text", "video"}
@@ -804,14 +801,14 @@ class MemoryService:
             self._require_contribution(session, memory, user, role)
             batch_key = None
             if batch_file_id is not None:
-                assert body.purpose == "attachment" and body.fragment_id is not None
+                assert body.purpose == "attachment"
                 batch_key = self.batch_attachment_upload_key(
                     user_id, memory.id, body.fragment_id, batch_file_id
                 )
                 if ask_about_attachment_duplicates:
                     # 先查操作级幂等记录，再决定是否需要签发或复用文件。
                     link = self._attachment_operation(
-                        session, body.fragment_id, user_id, batch_file_id
+                        session, memory.id, user_id, batch_file_id, fragment_id=body.fragment_id
                     )
                     if link is not None:
                         linked_asset = self._asset(session, user_id, link.media_asset_id)
@@ -840,7 +837,7 @@ class MemoryService:
                     grant = self._replay_attachment_authorization(session, attempt, body, storage)
                     if ask_about_attachment_duplicates and grant["reused"]:
                         grant["attachment_id"] = self._active_attachment_id(
-                            session, body.fragment_id, grant["asset_id"]
+                            session, memory.id, grant["asset_id"]
                         )
                     return grant
             if body.sha256:
@@ -854,9 +851,9 @@ class MemoryService:
                 )
                 if existing is not None:
                     grant = {"reused": True, "asset_id": existing.id}
-                    if ask_about_attachment_duplicates and body.fragment_id is not None:
+                    if ask_about_attachment_duplicates:
                         grant["attachment_id"] = self._active_attachment_id(
-                            session, body.fragment_id, existing.id
+                            session, memory.id, existing.id
                         )
                     return grant
                 if ask_about_attachment_duplicates and batch_key is not None:
@@ -1333,11 +1330,9 @@ class MemoryService:
                 item.contributor_id != fragment.contributor_id for item in attachments
             ):
                 raise HTTPException(status_code=403, detail="该片段含其他成员的附件")
-            affected_asset_ids = {attachment.media_asset_id for attachment in attachments}
-            for attachment in attachments:
-                attachment.is_del = True
-                attachment.updated_by = user.id
-                attachment.updated_at = now
+            # [删除-旧] 删除片段时连带软删除附件。
+            # [新增] 保留故事附件以及原片段的追溯信息。
+            affected_asset_ids = set()
             if fragment.source_asset_id is not None:
                 affected_asset_ids.add(fragment.source_asset_id)
             self._refresh_assets_after_unlink(session, affected_asset_ids)
@@ -1357,7 +1352,8 @@ class MemoryService:
     @staticmethod
     def _add_attachment_link(
         session: Session,
-        fragment_id: int,
+        session_id: int,
+        fragment_id: int | None,
         contributor_id: int,
         user_id: int,
         asset: MediaAsset,
@@ -1366,6 +1362,7 @@ class MemoryService:
         client_file_id: uuid.UUID | None = None,
     ) -> FragmentAttachment:
         link = FragmentAttachment(
+            session_id=session_id,
             fragment_id=fragment_id,
             media_asset_id=asset.id,
             contributor_id=contributor_id,
@@ -1399,26 +1396,28 @@ class MemoryService:
         self,
         session: Session,
         user: User,
-        fragment_id: int,
+        target_id: int,
         body: AttachmentBatchCreate,
         storage: ObjectStorageService | None = None,
+        *, story: bool = False,
     ) -> list[dict]:
         with session.begin():
-            fragment, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
+            memory, role = self._attachment_target(session, user.id, target_id, story=story, lock=True)
+            fragment_id = None if story else target_id
             contributor = self._require_contribution(session, memory, user, role)
             if contributor is None:
                 contributor = self._owner_contributor(session, memory, user)
             current = (
                 session.scalar(
                     select(func.count(FragmentAttachment.id)).where(
-                        FragmentAttachment.fragment_id == fragment.id,
+                        FragmentAttachment.session_id == memory.id,
                         FragmentAttachment.is_del.is_(False),
                     )
                 )
                 or 0
             )
-            if current + len(body.items) > MAX_ATTACHMENTS_PER_FRAGMENT:
-                raise HTTPException(status_code=422, detail="每段语音最多关联 9 个附件")
+            if current + len(body.items) > MAX_ATTACHMENTS_PER_SESSION:
+                raise HTTPException(status_code=422, detail="每个故事最多关联 9 个附件")
             ids = [item.asset_id for item in body.items]
             if len(ids) != len(set(ids)):
                 raise HTTPException(status_code=422, detail="同一请求中不能重复添加素材")
@@ -1445,19 +1444,20 @@ class MemoryService:
                     raise HTTPException(status_code=422, detail="附件素材未上传完成或用途不正确")
                 if session.scalar(
                     select(FragmentAttachment.id).where(
-                        FragmentAttachment.fragment_id == fragment.id,
+                        FragmentAttachment.session_id == memory.id,
                         FragmentAttachment.media_asset_id == asset.id,
                         FragmentAttachment.is_del.is_(False),
                     )
                 ):
-                    raise HTTPException(status_code=409, detail="该素材已关联到此语音片段")
+                    raise HTTPException(status_code=409, detail="该素材已关联到此故事")
                 result.append(
                     self._add_attachment_link(
-                        session, fragment.id, contributor.id, user.id, asset, item
+                        session, memory.id, fragment_id, contributor.id, user.id, asset, item
                     )
                 )
             session.flush()
-            self._schedule_attachments_added(session, memory, fragment.id, user.id)
+            if fragment_id is not None:
+                self._schedule_attachments_added(session, memory, fragment_id, user.id)
             return [self._attachment_response(session, link, storage) for link in result]
 
     def _attachment_response(
@@ -1469,6 +1469,7 @@ class MemoryService:
         asset = session.get(MediaAsset, link.media_asset_id)
         return {
             "id": link.id,
+            "session_id": link.session_id,
             "fragment_id": link.fragment_id,
             "contributor_id": link.contributor_id,
             "asset": self._asset_response(asset, storage),
@@ -1477,15 +1478,31 @@ class MemoryService:
             "created_at": link.created_at,
         }
 
+    # [新增] 旧片段接口保留原片段范围。
+    def _attachment_target(
+        self, session: Session, user_id: int, target_id: int, *, story: bool, lock: bool = False
+    ) -> tuple[MemorySession, str]:
+        if story:
+            return self._session_access(session, user_id, target_id, lock=lock)
+        _, memory, role = self._fragment_access(session, user_id, target_id, lock=lock)
+        return memory, role
+
+    @staticmethod
+    def _attachment_query(memory_id: int, fragment_id: int | None):
+        query = select(FragmentAttachment).where(
+            FragmentAttachment.session_id == memory_id, FragmentAttachment.is_del.is_(False)
+        )
+        if fragment_id is not None:
+            query = query.where(FragmentAttachment.fragment_id == fragment_id)
+        return query
+
     def list_attachments(
-        self, session: Session, user: User, fragment_id: int, storage: ObjectStorageService
+        self, session: Session, user: User, target_id: int, storage: ObjectStorageService,
+        *, story: bool = False,
     ) -> list[dict]:
-        self._fragment_access(session, user.id, fragment_id)
+        memory, _ = self._attachment_target(session, user.id, target_id, story=story)
         rows = session.scalars(
-            select(FragmentAttachment)
-            .where(
-                FragmentAttachment.fragment_id == fragment_id, FragmentAttachment.is_del.is_(False)
-            )
+            self._attachment_query(memory.id, None if story else target_id)
             .order_by(FragmentAttachment.sort_order, FragmentAttachment.id)
         ).all()
         return [self._attachment_response(session, row, storage) for row in rows]
@@ -1494,22 +1511,20 @@ class MemoryService:
         self,
         session: Session,
         user: User,
-        fragment_id: int,
+        target_id: int,
         attachment_id: int,
         body: AttachmentPatch,
         storage: ObjectStorageService | None = None,
+        *, story: bool = False,
     ) -> dict:
         values = body.model_dump(exclude_unset=True)
         if not values:
             raise HTTPException(status_code=422, detail="至少提供一个要更新的字段")
         with session.begin():
-            _, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
+            memory, role = self._attachment_target(session, user.id, target_id, story=story, lock=True)
             link = session.scalar(
-                select(FragmentAttachment).where(
-                    FragmentAttachment.id == attachment_id,
-                    FragmentAttachment.fragment_id == fragment_id,
-                    FragmentAttachment.is_del.is_(False),
-                )
+                self._attachment_query(memory.id, None if story else target_id)
+                .where(FragmentAttachment.id == attachment_id)
             )
             if link is None:
                 raise self._not_found()
@@ -1517,24 +1532,22 @@ class MemoryService:
             for key, value in values.items():
                 setattr(link, key, value)
             link.updated_by = user.id
-            if memory.visibility is not None:
+            if not story and memory.visibility is not None:
                 schedule_material_validation(
-                    session, memory.owner_user_id, memory.id, fragment_id=fragment_id,
+                    session, memory.owner_user_id, memory.id, fragment_id=target_id,
                     actor_id=user.id, reason="attachment_updated",
                 )
         return self._attachment_response(session, link, storage)
 
     def delete_attachment(
-        self, session: Session, user: User, fragment_id: int, attachment_id: int
+        self, session: Session, user: User, target_id: int, attachment_id: int,
+        *, story: bool = False,
     ) -> None:
         with session.begin():
-            _, memory, role = self._fragment_access(session, user.id, fragment_id, lock=True)
+            memory, role = self._attachment_target(session, user.id, target_id, story=story, lock=True)
             link = session.scalar(
-                select(FragmentAttachment).where(
-                    FragmentAttachment.id == attachment_id,
-                    FragmentAttachment.fragment_id == fragment_id,
-                    FragmentAttachment.is_del.is_(False),
-                )
+                self._attachment_query(memory.id, None if story else target_id)
+                .where(FragmentAttachment.id == attachment_id)
             )
             if link is None:
                 raise self._not_found()
@@ -1544,9 +1557,9 @@ class MemoryService:
             link.updated_by = user.id
             link.updated_at = now
             self._refresh_assets_after_unlink(session, {link.media_asset_id})
-            if memory.visibility is not None:
+            if not story and memory.visibility is not None:
                 schedule_material_validation(
-                    session, memory.owner_user_id, memory.id, fragment_id=fragment_id,
+                    session, memory.owner_user_id, memory.id, fragment_id=target_id,
                     actor_id=user.id, reason="attachment_deleted",
                 )
 
@@ -1636,10 +1649,8 @@ class MemoryService:
         attachment_count = (
             session.scalar(
                 select(func.count(FragmentAttachment.id))
-                .join(MemoryFragment, MemoryFragment.id == FragmentAttachment.fragment_id)
                 .where(
-                    MemoryFragment.session_id == row.id,
-                    MemoryFragment.is_del.is_(False),
+                    FragmentAttachment.session_id == row.id,
                     FragmentAttachment.is_del.is_(False),
                 )
             )

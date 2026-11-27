@@ -521,3 +521,101 @@ def delete_attachment(
 ):
     service.delete_attachment(db, user, fragment_id, attachment_id)
     return {"id": attachment_id, "deleted": True}
+
+
+# [新增] 故事附件不依赖录音片段。
+@router.post(
+    "/recording-sessions/{session_id}/attachments/batch-upload-authorizations",
+    response_model=AttachmentUploadBatchResponse,
+    summary="批量申请故事附件上传授权",
+)
+def create_story_attachment_batch_upload_authorizations(
+    session_id: Annotated[int, Path(gt=0, le=PG_BIGINT_MAX)],
+    body: AttachmentUploadBatch,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AttachmentUploadService, Depends(AttachmentUploadService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.authorize(db, user, session_id, body, storage, story=True)
+
+
+@router.post(
+    "/recording-sessions/{session_id}/attachments/batch-complete-and-attach",
+    response_model=AttachmentCompleteBatchResponse,
+    summary="批量确认上传并关联故事附件",
+)
+def complete_and_attach_story_attachment_batch(
+    session_id: Annotated[int, Path(gt=0, le=PG_BIGINT_MAX)],
+    body: AttachmentCompleteBatch,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AttachmentUploadService, Depends(AttachmentUploadService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.complete_and_attach(db, user, session_id, body, storage, story=True)
+
+
+@router.post(
+    "/recording-sessions/{session_id}/attachments",
+    response_model=list[AttachmentResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="批量添加故事附件",
+)
+def create_story_attachments(
+    session_id: int,
+    body: AttachmentBatchCreate,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[MemoryService, Depends(MemoryService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.create_attachments(db, user, session_id, body, storage, story=True)
+
+
+@router.get(
+    "/recording-sessions/{session_id}/attachments",
+    response_model=list[AttachmentResponse],
+    summary="查询故事附件",
+)
+def list_story_attachments(
+    session_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[MemoryService, Depends(MemoryService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.list_attachments(db, user, session_id, storage, story=True)
+
+
+@router.patch(
+    "/recording-sessions/{session_id}/attachments/{attachment_id}",
+    response_model=AttachmentResponse,
+    summary="更新附件说明或顺序",
+)
+def patch_story_attachment(
+    session_id: int,
+    attachment_id: int,
+    body: AttachmentPatch,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[MemoryService, Depends(MemoryService)],
+    storage: Annotated[ObjectStorageService, Depends(get_object_storage_service)],
+):
+    return service.patch_attachment(db, user, session_id, attachment_id, body, storage, story=True)
+
+
+@router.delete(
+    "/recording-sessions/{session_id}/attachments/{attachment_id}",
+    response_model=DeleteResponse,
+    summary="从故事移除附件",
+)
+def delete_story_attachment(
+    session_id: int,
+    attachment_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[MemoryService, Depends(MemoryService)],
+):
+    service.delete_attachment(db, user, session_id, attachment_id, story=True)
+    return {"id": attachment_id, "deleted": True}

@@ -31,9 +31,9 @@ def memory_api(client, tmp_path, monkeypatch):
     return client, owner, _new_fragment(client, owner)
 
 
-def _new_fragment(client, owner):
+def _new_fragment(client, owner, session_id=11):
     reply = client.post(
-        "/api/recording-sessions/11/fragments",
+        f"/api/recording-sessions/{session_id}/fragments",
         headers=owner,
         json={"source_type": "text", "content_text": "我搬家的那一年。"},
     )
@@ -151,6 +151,7 @@ def test_nine_files_complete_in_two_business_calls_and_replay_at_capacity(memory
             db.add(
                 FragmentAttachment(
                     fragment_id=active[0]["fragment_id"],
+                    session_id=active[0]["session_id"],
                     media_asset_id=extra["asset_id"],
                     contributor_id=active[0]["contributor_id"],
                     created_by=1,
@@ -201,6 +202,19 @@ def test_batch_returns_file_errors_and_only_retries_failed_upload(memory_api, mo
     assert _batch(client, complete, owner, [_completion(later)])[0]["status"] == "attached"
     assert len(client.get(attachments, headers=owner).json()) == 2
 
+    # [新增] Mock PUT 校验上限，确认才校验实传字节数是否与授权完全一致。
+    short_grant = _batch(
+        client, authorize, owner, [_image(good_bytes, size_bytes=len(good_bytes) + 1)]
+    )[0]
+    _put(client, short_grant, good_bytes)
+    short = _batch(client, complete, owner, [_completion(short_grant)])[0]
+    assert short["error"] == {
+        "code": "file_mismatch",
+        "message": "已上传文件的大小或类型与声明不符",
+        "retryable": False,
+    }
+    assert len(client.get(attachments, headers=owner).json()) == 2
+
 
 def test_canonical_asset_and_attachment_are_recovered_after_deduplication(memory_api):
     client, owner, attachments = memory_api
@@ -227,7 +241,7 @@ def test_canonical_asset_and_attachment_are_recovered_after_deduplication(memory
         assert discarded.upload_status == "failed" and discarded.purge_after is not None
         assert discarded.content_sha256 == sha256(picture).hexdigest()
 
-    other = _new_fragment(client, owner)
+    other = _new_fragment(client, owner, 12)
     preverified = _batch(
         client,
         f"{other}/batch-upload-authorizations",
@@ -261,6 +275,7 @@ def test_attachment_schema_allows_copies_and_reserves_operation_id_after_deletio
             assert original.client_file_id is None
             shared = {
                 "fragment_id": original.fragment_id,
+                "session_id": original.session_id,
                 "media_asset_id": original.media_asset_id,
                 "contributor_id": original.contributor_id,
             }
@@ -330,6 +345,16 @@ def test_batch_validates_scope_file_id_and_legacy_recording_purpose(memory_api):
     assert _batch(client, complete, owner, [_completion(grant)])[0]["error"]["code"] == (
         "authorization_expired"
     )
+
+    # [新增] 授权过期后，用新 UUID 申请、直传，并以新授权返回的配对确认。
+    new_item = {**item, "client_file_id": str(uuid4())}
+    new_grant = _batch(client, authorize, owner, [new_item])[0]
+    assert new_grant["status"] == "upload_required"
+    assert new_grant["asset_id"] != grant["asset_id"]
+    _put(client, new_grant, content)
+    result = _batch(client, complete, owner, [_completion(new_grant)])[0]
+    assert result["status"] == "attached"
+    assert result["asset_id"] == new_grant["asset_id"]
 
     recording = b"RIFF" + b"\x00" * 4 + b"WAVE"
     reply = client.post(
@@ -686,7 +711,7 @@ def test_ask_requires_direct_representative_for_same_asset(memory_api):
         assert client.post(complete, headers=owner, json=payload).status_code == 422
 
 
-def test_ask_reuses_verified_file_across_fragments_but_not_across_accounts(memory_api):
+def test_ask_reuses_verified_file_across_stories_but_not_across_accounts(memory_api):
     client, owner, attachments = memory_api
     authorize = f"{attachments}/batch-upload-authorizations"
     complete = f"{attachments}/batch-complete-and-attach"
@@ -709,7 +734,7 @@ def test_ask_reuses_verified_file_across_fragments_but_not_across_accounts(memor
     )[0]
     assert foreign["status"] == "upload_required" and foreign["asset_id"] != first["asset_id"]
 
-    other_fragment = _new_fragment(client, owner)
+    other_fragment = _new_fragment(client, owner, 12)
     different_picture = PNG + b"other"
     grants = _batch(
         client,
@@ -728,3 +753,46 @@ def test_ask_reuses_verified_file_across_fragments_but_not_across_accounts(memor
     assert duplicate["representative_client_file_id"] == reused["client_file_id"]
     # 文件名相同，摘要不同，仍然单独上传。
     assert distinct["status"] == "upload_required" and distinct["asset_id"] != reused["asset_id"]
+
+
+# [新增] 旧路径与新故事路径共享容量，删除原片段以后仍可管理附件。
+def test_story_attachment_capacity_and_fragment_deletion(memory_api):
+    client, owner, legacy = memory_api
+    fragment_id = int(legacy.split("/")[-2])
+    session = "/api/recording-sessions/11"
+    attachments = f"{session}/attachments"
+    authorize = f"{attachments}/batch-upload-authorizations"
+    complete = f"{attachments}/batch-complete-and-attach"
+    photo = PNG + b"legacy"
+    grant = _batch(client, f"{legacy}/batch-upload-authorizations", owner, [_image(photo)])[0]
+    _put(client, grant, photo)
+    original = _batch(client, f"{legacy}/batch-complete-and-attach", owner, [_completion(grant)])[0]
+
+    duplicate = _batch(
+        client, authorize, owner, [_image(photo, sha256=sha256(photo).hexdigest())],
+        duplicate_mode="ask",
+    )[0]
+    assert duplicate["reason"] == "existing_attachment"
+    assert duplicate["attachment_id"] == original["attachment_id"]
+
+    assert client.delete(f"{session}/fragments/{fragment_id}", headers=owner).status_code == 200
+    listing = client.get(attachments, headers=owner).json()
+    assert listing[0]["fragment_id"] == fragment_id
+    assert listing[0]["session_id"] == 11
+    assert client.get(session, headers=owner).json()["attachment_count"] == 1
+    assert client.get(legacy, headers=owner).status_code == 404
+
+    photos = [PNG + bytes([i]) for i in range(9)]
+    grants = _batch(client, authorize, owner, [_image(photo) for photo in photos])
+    for grant, photo in zip(grants, photos):
+        _put(client, grant, photo)
+    results = _batch(client, complete, owner, [_completion(grant) for grant in grants])
+    assert [item["status"] for item in results] == ["attached"] * 8 + ["failed"]
+    assert results[-1]["error"]["code"] == "attachment_limit_reached"
+    listing = client.get(attachments, headers=owner).json()
+    assert len(listing) == 9
+    assert sum(row["fragment_id"] is None for row in listing) == 8
+    link = f"{attachments}/{original['attachment_id']}"
+    assert client.patch(link, headers=owner, json={"caption": "故事照片"}).status_code == 200
+    assert client.delete(link, headers=owner).status_code == 200
+    assert _batch(client, complete, owner, [_completion(grants[-1])])[0]["status"] == "attached"

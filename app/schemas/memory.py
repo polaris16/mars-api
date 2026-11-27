@@ -128,8 +128,7 @@ class UploadAuthorizationRequest(BaseModel):
         else:
             valid = (
                 self.media_type in {"audio", "image", "video"}
-                and self.fragment_id is not None
-                and self.session_id is None
+                and ((self.fragment_id is None) != (self.session_id is None))
             )
         if not valid:
             raise ValueError("purpose, media_type, and session/fragment binding are inconsistent")
@@ -259,7 +258,8 @@ class AttachmentPatch(BaseModel):
 
 class AttachmentResponse(BaseModel):
     id: int
-    fragment_id: int
+    session_id: int
+    fragment_id: int | None
     contributor_id: int
     asset: MediaAssetResponse
     caption: str | None

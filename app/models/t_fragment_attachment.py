@@ -43,17 +43,31 @@ class FragmentAttachment(Base):
             postgresql_where=text("client_file_id IS NOT NULL"),
         ),
         Index("idx_t_fragment_attachment_order", "fragment_id", "sort_order", "id"),
-        {"comment": "语音片段与多媒体素材关联表"},
+        Index("idx_t_story_attachment_order", "session_id", "sort_order", "id"),
+        Index("idx_t_story_attachment_active_asset", "session_id", "media_asset_id",
+              postgresql_where=text("is_del = false")),
+        Index("uq_t_story_attachment_client_file", "session_id", "created_by", "client_file_id",
+              unique=True,
+              postgresql_where=text("fragment_id IS NULL AND client_file_id IS NOT NULL"),
+              sqlite_where=text("fragment_id IS NULL AND client_file_id IS NOT NULL")),
+        {"comment": "故事会话与附件素材关联表"},
     )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="关联ID")
+    # [新增] 故事是附件归属，原片段仅用于来源追溯及旧接口。
+    session_id = Column(
+        BigInteger,
+        ForeignKey("t_memory_session.id", ondelete="CASCADE", name="fk_t_story_attachment_session"),
+        nullable=False,
+        comment="附件所属故事会话ID",
+    )
     fragment_id = Column(
         BigInteger,
         ForeignKey(
-            "t_memory_fragment.id", ondelete="CASCADE", name="fk_t_fragment_attachment_fragment"
+            "t_memory_fragment.id", ondelete="SET NULL", name="fk_t_fragment_attachment_fragment"
         ),
-        nullable=False,
-        comment="语音片段ID",
+        nullable=True,
+        comment="旧版附件来源片段ID，新故事附件为空",
     )
     media_asset_id = Column(
         BigInteger,
